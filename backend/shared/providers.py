@@ -349,7 +349,7 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
     def __init__(
         self,
         api_key: str,
-        model: str = "text-embedding-004",
+        model: str = "gemini-embedding-001",
         dimensions: int = 768,
         max_retries: int = 3,
         timeout_seconds: float = 30.0,

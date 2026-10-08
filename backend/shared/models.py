@@ -494,11 +494,11 @@ class AppConfig(BaseSchema):
     groq_model: str = ""
     google_api_key: str = ""
     gemini_model: str = "gemini-1.5-flash"
-    gemini_embedding_model: str = "text-embedding-004"
+    gemini_embedding_model: str = "gemini-embedding-001"
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     nemotron_model: str = "nvidia/nemotron-3-ultra"
-    embedding_model: str = "text-embedding-004"
+    embedding_model: str = "gemini-embedding-001"
     embedding_dimensions: int = 768
     playwright_mcp_url: str = "http://localhost:3001"
     fetch_mcp_url: str = "http://localhost:3002"
@@ -552,11 +552,11 @@ def load_config() -> AppConfig:
         groq_model=os.getenv("GROQ_MODEL", ""),
         google_api_key=os.getenv("GOOGLE_API_KEY", ""),
         gemini_model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
-        gemini_embedding_model=os.getenv("GEMINI_EMBEDDING_MODEL", "text-embedding-004"),
+        gemini_embedding_model=os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001"),
         openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
         openrouter_base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
         nemotron_model=os.getenv("NEMOTRON_MODEL", "nvidia/nemotron-3-ultra"),
-        embedding_model=os.getenv("EMBEDDING_MODEL", "text-embedding-004"),
+        embedding_model=os.getenv("EMBEDDING_MODEL", "gemini-embedding-001"),
         embedding_dimensions=int(os.getenv("EMBEDDING_DIMENSIONS", "768")),
         playwright_mcp_url=os.getenv("PLAYWRIGHT_MCP_URL", "http://localhost:3001"),
         fetch_mcp_url=os.getenv("FETCH_MCP_URL", "http://localhost:3002"),

@@ -141,9 +141,11 @@ def _build_validator_user_message(
     confidence_threshold: float,
 ) -> str:
     """Build the user message for the LLM validator call using guardrail delimiters."""
+    # Bounded to 6,000 chars to strictly stay within free-tier TPM limits (e.g. Groq 8k TPM)
+    bounded_source = source_content[:6000] if source_content else ""
     return (
         f"Confidence threshold for 'pass' verdict: {confidence_threshold:.2f}\n\n"
-        f"{delimit_untrusted_content('source_content', source_content)}\n\n"
+        f"{delimit_untrusted_content('source_content', bounded_source)}\n\n"
         f"{delimit_untrusted_content('extracted_json', json.dumps(extracted_json, indent=2))}\n\n"
         f"{delimit_untrusted_content('subtask_description', subtask_description)}"
     )
@@ -228,6 +230,7 @@ class ValidatorLLMClient:
                 messages=[{"role": "user", "content": user_message}],
                 system_prompt=VALIDATOR_SYSTEM_PROMPT,
                 temperature=0.0,
+                max_tokens=800,
             )
             if not isinstance(parsed, dict) or "verdict" not in parsed or "confidence" not in parsed:
                 raise ValueError(f"Invalid validator response schema: {parsed}")
