@@ -126,59 +126,38 @@ def validate_subtask_constraints(
     return cleaned_subtasks
 
 
+from shared.providers import get_llm_provider
+
+# ============================================================
+# LLM PLANNER CLIENT
+# ============================================================
+
 class LLMPlanner:
-    """LLM client for Planner reasoning with retry and strict schema validation."""
+    """Client for calling reasoning model via unified provider abstraction (Groq / Gemini)."""
 
     def __init__(
         self,
         config: AppConfig,
-        retry_attempts: int = 3,
+        retry_attempts: int = 2,
         retry_wait: Any = None,
     ):
         self.config = config
         self.retry_attempts = retry_attempts
-        self.retry_wait = (
-            retry_wait
-            if retry_wait is not None
-            else wait_exponential(multiplier=1, min=1, max=10)
-        )
-        self._client: httpx.AsyncClient | None = None
+        self.retry_wait = retry_wait
+        self._provider = get_llm_provider(role="reasoning", config=config)
 
     async def __aenter__(self) -> LLMPlanner:
-        # Use OpenRouter or Anthropic depending on available key; default to openrouter
-        if self.config.anthropic_api_key and not self.config.openrouter_api_key:
-            self._client = httpx.AsyncClient(
-                base_url="https://api.anthropic.com/v1",
-                headers={
-                    "x-api-key": self.config.anthropic_api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                timeout=httpx.Timeout(60.0),
-            )
-            self._is_anthropic = True
-        else:
-            self._client = httpx.AsyncClient(
-                base_url=self.config.openrouter_base_url,
-                headers={
-                    "Authorization": f"Bearer {self.config.openrouter_api_key}",
-                    "Content-Type": "application/json",
-                },
-                timeout=httpx.Timeout(60.0),
-            )
-            self._is_anthropic = False
         return self
 
     async def __aexit__(self, *args: Any) -> None:
-        if self._client:
-            await self._client.aclose()
+        pass
 
     async def plan(
         self,
         input_data: PlannerInput,
     ) -> tuple[PlannerOutput, ToolCall]:
         """
-        Calls LLM to generate plan.
+        Calls reasoning LLM via provider to generate plan.
         Retries once if response fails schema/constraint validation, then raises.
         """
         start = time.perf_counter()
@@ -189,13 +168,12 @@ class LLMPlanner:
         )
 
         last_error: Exception | None = None
-        raw_json_str = ""
+        parsed: dict[str, Any] | None = None
 
         # Retry once on schema / constraint failure (up to 2 attempts total)
         for attempt_idx in range(2):
             try:
-                raw_json_str = await self._call_llm(user_prompt)
-                parsed = json.loads(raw_json_str)
+                parsed = await self._call_llm(user_prompt)
 
                 if not isinstance(parsed, dict):
                     raise ValueError(f"LLM output must be a JSON object, got {type(parsed).__name__}")
@@ -233,7 +211,7 @@ class LLMPlanner:
                 )
                 return final_output, tool_call
 
-            except (json.JSONDecodeError, ValidationError, ValueError) as err:
+            except (ValidationError, ValueError) as err:
                 last_error = err
                 logger.warning(
                     "Planner validation attempt %d failed: %s. Retrying once if attempt < 2.",
@@ -250,72 +228,20 @@ class LLMPlanner:
         tool_call = ToolCall(
             tool_name="planner_reasoning",
             input_args={"goal": input_data.goal, "run_id": str(input_data.run_id)},
-            output={"raw": raw_json_str[:500]} if raw_json_str else None,
+            output=parsed,
             error=str(last_error),
             duration_ms=duration,
         )
         raise ValueError(f"Planner output validation failed after retry: {last_error}") from last_error
 
-    async def _call_llm(self, user_prompt: str) -> str:
-        """Execute external call with retry."""
-        payload = {
-            "model": self.config.claude_model or self.config.nemotron_model,
-            "messages": [
-                {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"},
-        }
-
-        if not self.config.anthropic_api_key and not self.config.openrouter_api_key:
-            logger.info("Planner using offline deterministic decomposition (no API key configured)")
-            return json.dumps({
-                "subtasks": [
-                    {
-                        "subtask_id": "sub_1",
-                        "description": f"Empirical literature review on {user_prompt[:60].strip()}",
-                        "candidate_domains": ["arxiv.org", "wikipedia.org"],
-                    }
-                ],
-                "reasoning": "Offline deterministic planning fallback",
-            })
-
-        async for attempt in AsyncRetrying(
-            stop=stop_after_attempt(self.retry_attempts),
-            wait=self.retry_wait,
-            retry=retry_if_exception_type((httpx.TimeoutException, httpx.ConnectError, RuntimeError)),
-            reraise=True,
-        ):
-            with attempt:
-                try:
-                    resp = await self._client.post("/chat/completions", json=payload)
-                    if resp.status_code in (400, 401, 403):
-                        logger.warning(
-                            "Planner LLM returned HTTP %d, falling back to deterministic planning",
-                            resp.status_code,
-                        )
-                        return json.dumps({
-                            "subtasks": [
-                                {
-                                    "subtask_id": "sub_1",
-                                    "description": f"Empirical literature review on {user_prompt[:60].strip()}",
-                                    "candidate_domains": ["arxiv.org", "wikipedia.org"],
-                                }
-                            ],
-                            "reasoning": "Offline deterministic planning fallback",
-                        })
-                    if resp.status_code != 200:
-                        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:500]}")
-                    data = resp.json()
-                    return data["choices"][0]["message"]["content"]
-                except (httpx.TimeoutException, httpx.ConnectError, RuntimeError) as exc:
-                    logger.warning(
-                        "Planner LLM attempt %d failed: %s",
-                        attempt.retry_state.attempt_number,
-                        exc,
-                    )
-                    raise
+    async def _call_llm(self, user_prompt: str) -> dict[str, Any]:
+        """Execute reasoning call via unified LLMProvider."""
+        data, _ = await self._provider.complete_json(
+            messages=[{"role": "user", "content": user_prompt}],
+            system_prompt=PLANNER_SYSTEM_PROMPT,
+            temperature=0.2,
+        )
+        return data
 
 
 async def planner_node(state: dict[str, Any]) -> dict[str, Any]:

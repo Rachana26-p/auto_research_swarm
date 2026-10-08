@@ -53,8 +53,9 @@ def mock_config() -> AppConfig:
         supabase_writer_key="key",
         tavily_api_key="tvly-test",
         openrouter_api_key="sk-test",
-        anthropic_api_key="sk-ant-test",
-        openai_api_key="sk-test",
+        groq_api_key="sk-groq-test",
+        groq_model="llama-3.3-70b-versatile",
+        google_api_key="sk-google-test",
     )
 
 

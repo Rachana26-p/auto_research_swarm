@@ -234,6 +234,18 @@ class RunManager:
                         "details": interrupt.state_snapshot,
                     },
                 )
+            elif interrupt.reason == InterruptReason.QUOTA_EXHAUSTED:
+                record.status = "failed"
+                record.completed_at = datetime.utcnow()
+                record.error_message = f"Free-tier quota exhausted: {interrupt.state_snapshot.get('error', 'Rate limit exceeded')}"
+                record.emit_event(
+                    "run_failed",
+                    {
+                        "reason": "quota_exhausted",
+                        "error": record.error_message,
+                        "details": interrupt.state_snapshot,
+                    },
+                )
             else:
                 record.emit_event(
                     "run_interrupted",

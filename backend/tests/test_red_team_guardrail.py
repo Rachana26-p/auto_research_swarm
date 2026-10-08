@@ -50,8 +50,9 @@ def mock_config():
         supabase_writer_key="secret-writer-key",
         tavily_api_key="secret-tavily-key",
         openrouter_api_key="secret-openrouter-key",
-        anthropic_api_key="secret-anthropic-key",
-        openai_api_key="secret-openai-key",
+        groq_api_key="secret-groq-key",
+        groq_model="llama-3.3-70b-versatile",
+        google_api_key="secret-google-key",
         api_key="secret-admin-api-key",
     )
 
@@ -146,8 +147,8 @@ async def test_red_team_page_results_in_safety_flag_and_no_leak(mock_config):
     all_secrets = [
         mock_config.api_key,
         mock_config.openrouter_api_key,
-        mock_config.anthropic_api_key,
-        mock_config.openai_api_key,
+        mock_config.groq_api_key,
+        mock_config.google_api_key,
         mock_config.supabase_validator_key,
         "secret-master-key",
     ]

@@ -58,8 +58,11 @@ def mock_config(tmp_path: Path) -> AppConfig:
         supabase_writer_key="key",
         tavily_api_key="tvly-test",
         openrouter_api_key="sk-test",
-        anthropic_api_key="sk-ant-test",
-        openai_api_key="sk-openai-test",
+        groq_api_key="sk-groq-test",
+        groq_model="llama-3.3-70b-versatile",
+        google_api_key="sk-google-test",
+        embedding_model="text-embedding-004",
+        embedding_dimensions=768,
         knowledge_dir=str(knowledge_dir),
     )
 
@@ -163,24 +166,28 @@ class TestWriterUnit:
             faithfulness_notes="Perfect match",
         )
 
-        # Mock embedding response
+        # Mock embedding response (Gemini text-embedding-004)
         mock_emb_resp = MagicMock(status_code=200)
         mock_emb_resp.json.return_value = {
-            "data": [{"embedding": [0.1] * 1536}]
+            "embedding": {"values": [0.1] * 768}
         }
 
         # Mock Supabase responses
-        mock_sb_resp = MagicMock(status_code=201)
-        mock_sb_resp.json.return_value = {"id": str(page_id)}
+        mock_sb_page_resp = MagicMock(status_code=201)
+        mock_sb_page_resp.json.return_value = [{"id": str(page_id)}]
+        mock_sb_emb_resp = MagicMock(status_code=201)
+        mock_sb_emb_resp.json.return_value = [{"id": str(uuid4())}]
 
         captured_urls: list[str] = []
 
         async def _mock_post(url, **kwargs):
             url_str = str(url)
             captured_urls.append(url_str)
-            if "/embeddings" in url_str:
+            if "embedContent" in url_str or "googleapis.com" in url_str:
                 return mock_emb_resp
-            return mock_sb_resp
+            if "/rest/v1/embeddings" in url_str:
+                return mock_sb_emb_resp
+            return mock_sb_page_resp
 
         with patch("httpx.AsyncClient.post", new_callable=AsyncMock, side_effect=_mock_post), \
              patch("agents.writer.get_config", return_value=mock_config):
@@ -256,18 +263,23 @@ class TestWriterUnit:
         )
 
         mock_emb_resp = MagicMock(status_code=200)
-        mock_emb_resp.json.return_value = {"data": [{"embedding": [0.05] * 1536}]}
-        mock_sb_resp = MagicMock(status_code=200)
-        mock_sb_resp.json.return_value = {"id": str(page_id)}
+        mock_emb_resp.json.return_value = {"embedding": {"values": [0.05] * 768}}
+        mock_sb_page_resp = MagicMock(status_code=200)
+        mock_sb_page_resp.json.return_value = [{"id": str(page_id)}]
+        mock_sb_emb_resp = MagicMock(status_code=200)
+        mock_sb_emb_resp.json.return_value = [{"id": str(uuid4())}]
 
         captured_headers: list[dict[str, str]] = []
 
         async def _mock_post(url, **kwargs):
+            url_str = str(url)
             if "headers" in kwargs:
                 captured_headers.append(kwargs["headers"])
-            if "/embeddings" in str(url):
+            if "embedContent" in url_str or "googleapis.com" in url_str:
                 return mock_emb_resp
-            return mock_sb_resp
+            if "/rest/v1/embeddings" in url_str:
+                return mock_sb_emb_resp
+            return mock_sb_page_resp
 
         with patch("httpx.AsyncClient.post", new_callable=AsyncMock, side_effect=_mock_post), \
              patch("agents.writer.get_config", return_value=mock_config):
@@ -316,10 +328,11 @@ class TestWriterUnit:
 
         # Mock embedding API failure (e.g. 500 or timeout)
         mock_emb_fail = MagicMock(status_code=500, text="Internal embedding service error")
-        mock_sb_success = MagicMock(status_code=201, json=lambda: {"id": str(page_id)})
+        mock_sb_success = MagicMock(status_code=201)
+        mock_sb_success.json.return_value = [{"id": str(page_id)}]
 
         async def _mock_post(url, **kwargs):
-            if "/embeddings" in str(url) and "openai.com" in str(url):
+            if "embedContent" in str(url) or "googleapis.com" in str(url):
                 return mock_emb_fail
             return mock_sb_success
 
@@ -400,14 +413,18 @@ class TestWriterUnit:
         page_id = uuid4()
 
         mock_emb_resp = MagicMock(status_code=200)
-        mock_emb_resp.json.return_value = {"data": [{"embedding": [0.1] * 1536}]}
-        mock_sb_resp = MagicMock(status_code=201)
-        mock_sb_resp.json.return_value = {"id": str(page_id)}
+        mock_emb_resp.json.return_value = {"embedding": {"values": [0.1] * 768}}
+        mock_sb_page_resp = MagicMock(status_code=201)
+        mock_sb_page_resp.json.return_value = [{"id": str(page_id)}]
+        mock_sb_emb_resp = MagicMock(status_code=201)
+        mock_sb_emb_resp.json.return_value = [{"id": str(uuid4())}]
 
         async def _mock_post(url, **kwargs):
-            if "/embeddings" in str(url):
+            if "embedContent" in str(url) or "googleapis.com" in str(url):
                 return mock_emb_resp
-            return mock_sb_resp
+            if "/rest/v1/embeddings" in str(url):
+                return mock_sb_emb_resp
+            return mock_sb_page_resp
 
         with patch("httpx.AsyncClient.post", new_callable=AsyncMock, side_effect=_mock_post), \
              patch("agents.writer.get_config", return_value=mock_config):

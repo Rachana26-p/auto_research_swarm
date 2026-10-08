@@ -189,8 +189,11 @@ def _parse_llm_verdict_response(raw: str) -> dict[str, Any]:
     return data
 
 
+from shared.providers import get_llm_provider
+
+
 class ValidatorLLMClient:
-    """Calls the LLM (Claude/Gemini Pro tier) for validation judgment."""
+    """Calls reasoning LLM (Groq / Gemini free tier) for validation judgment."""
 
     def __init__(
         self,
@@ -199,6 +202,7 @@ class ValidatorLLMClient:
     ) -> None:
         self.config = config
         self.retry_attempts = retry_attempts
+        self._provider = get_llm_provider(role="reasoning", config=config)
 
     async def call(
         self,
@@ -219,84 +223,34 @@ class ValidatorLLMClient:
             confidence_threshold=confidence_threshold,
         )
 
-        headers = {
-            "Authorization": f"Bearer {self.config.openrouter_api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://auto-research-swarm",
-        }
-        payload = {
-            "model": self.config.claude_model,
-            "messages": [
-                {"role": "system", "content": VALIDATOR_SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
-            "temperature": 0.0,
-            "max_tokens": 500,
-        }
-
-        raw_response: str | None = None
-        error_message: str | None = None
-
         try:
-            async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(self.retry_attempts),
-                wait=wait_exponential(multiplier=1, min=1, max=10),
-                retry=retry_if_exception_type(
-                    (httpx.TimeoutException, httpx.ConnectError, RuntimeError)
-                ),
-                reraise=True,
-            ):
-                with attempt:
-                    try:
-                        async with httpx.AsyncClient(
-                            base_url=self.config.openrouter_base_url,
-                            headers=headers,
-                            timeout=httpx.Timeout(60.0),
-                        ) as client:
-                            resp = await client.post(
-                                "/chat/completions",
-                                json=payload,
-                            )
-                            if resp.status_code != 200:
-                                raise RuntimeError(
-                                    f"LLM API HTTP {resp.status_code}: {resp.text[:300]}"
-                                )
-                            data = resp.json()
-                            raw_response = (
-                                data["choices"][0]["message"]["content"]
-                                if "choices" in data and data["choices"]
-                                else None
-                            )
-                            if raw_response is None:
-                                raise RuntimeError(
-                                    f"LLM response missing 'choices': {str(data)[:300]}"
-                                )
-                    except (httpx.TimeoutException, httpx.ConnectError, RuntimeError) as exc:
-                        logger.warning(
-                            "Validator LLM attempt %d failed: %s",
-                            attempt.retry_state.attempt_number,
-                            exc,
-                        )
-                        raise
+            parsed, _ = await self._provider.complete_json(
+                messages=[{"role": "user", "content": user_message}],
+                system_prompt=VALIDATOR_SYSTEM_PROMPT,
+                temperature=0.0,
+            )
+            if not isinstance(parsed, dict) or "verdict" not in parsed or "confidence" not in parsed:
+                raise ValueError(f"Invalid validator response schema: {parsed}")
+            parsed["confidence"] = float(parsed["confidence"])
+            parsed["verdict"] = str(parsed["verdict"]).lower()
+            if parsed["verdict"] not in ("pass", "fail", "uncertain"):
+                raise ValueError(f"Invalid verdict: {parsed['verdict']}")
         except Exception as exc:
-            error_message = str(exc)
             duration = int((time.perf_counter() - start) * 1000)
             tool_call = ToolCall(
                 tool_name="validator_llm",
-                input_args={"model": self.config.claude_model, "subtask": subtask_description[:100]},
+                input_args={"model": self.config.groq_model or self.config.gemini_model, "subtask": subtask_description[:100]},
                 output=None,
-                error=error_message,
+                error=str(exc),
                 duration_ms=duration,
             )
             logger.error("Validator LLM call failed: %s", exc)
             raise RuntimeError(f"Validator LLM call failed: {exc}") from exc
 
         duration = int((time.perf_counter() - start) * 1000)
-        parsed = _parse_llm_verdict_response(raw_response)
-
         tool_call = ToolCall(
             tool_name="validator_llm",
-            input_args={"model": self.config.claude_model, "subtask": subtask_description[:100]},
+            input_args={"model": self.config.groq_model or self.config.gemini_model, "subtask": subtask_description[:100]},
             output={"verdict": parsed["verdict"], "confidence": parsed["confidence"]},
             error=None,
             duration_ms=duration,

@@ -33,16 +33,16 @@ class TestAppConfig:
             "SUPABASE_WRITER_KEY": "writer_key",
             "TAVILY_API_KEY": "tavily_key",
             "OPENROUTER_API_KEY": "openrouter_key",
-            "ANTHROPIC_API_KEY": "anthropic_key",
-            "OPENAI_API_KEY": "openai_key",
+            "GROQ_API_KEY": "groq_key",
+            "GROQ_MODEL": "llama-3.3-70b-versatile",
+            "GOOGLE_API_KEY": "google_key",
         }
         for k, v in env_vars.items():
             monkeypatch.setenv(k, v)
 
         config = load_config()
         assert config.supabase_url == "https://test.supabase.co"
-        assert config.nemotron_model == "nvidia/nemotron-3-ultra"
-        assert config.embedding_dimensions == 1536
+        assert config.embedding_dimensions == 768
 
     def test_invalid_supabase_url_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test that invalid Supabase URL is rejected."""
@@ -55,8 +55,9 @@ class TestAppConfig:
             "SUPABASE_WRITER_KEY": "x",
             "TAVILY_API_KEY": "x",
             "OPENROUTER_API_KEY": "x",
-            "ANTHROPIC_API_KEY": "x",
-            "OPENAI_API_KEY": "x",
+            "GROQ_API_KEY": "x",
+            "GROQ_MODEL": "llama-3.3-70b-versatile",
+            "GOOGLE_API_KEY": "x",
         }
         for k, v in env_vars.items():
             monkeypatch.setenv(k, v)
@@ -82,8 +83,9 @@ class TestAppConfig:
             "SUPABASE_WRITER_KEY": "x",
             "TAVILY_API_KEY": "x",
             "OPENROUTER_API_KEY": "x",
-            "ANTHROPIC_API_KEY": "x",
-            "OPENAI_API_KEY": "x",
+            "GROQ_API_KEY": "x",
+            "GROQ_MODEL": "llama-3.3-70b-versatile",
+            "GOOGLE_API_KEY": "x",
         }
 
         # Valid: 0.0
@@ -236,10 +238,9 @@ class TestEnsureDirectories:
             supabase_extractor_key="x",
             supabase_validator_key="x",
             supabase_writer_key="x",
-            tavily_api_key="x",
-            openrouter_api_key="x",
-            anthropic_api_key="x",
-            openai_api_key="x",
+            groq_api_key="x",
+            groq_model="llama-3.3-70b-versatile",
+            google_api_key="x",
             knowledge_dir=str(tmp_path / "knowledge"),
             langgraph_checkpoint_dir=str(tmp_path / "checkpoints"),
         )

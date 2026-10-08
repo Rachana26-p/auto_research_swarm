@@ -474,7 +474,7 @@ class EmbeddingRecord(BaseSchema):
     page_id: UUID
     chunk_index: int
     chunk_text: str
-    embedding: list[float] = Field(min_length=1536, max_length=1536)
+    embedding: list[float] = Field(min_length=768, max_length=768)
 
 
 # ============================================================
@@ -489,17 +489,17 @@ class AppConfig(BaseSchema):
     supabase_extractor_key: str
     supabase_validator_key: str
     supabase_writer_key: str
-    tavily_api_key: str
-    openrouter_api_key: str
+    tavily_api_key: str = ""
+    groq_api_key: str = ""
+    groq_model: str = ""
+    google_api_key: str = ""
+    gemini_model: str = "gemini-1.5-flash"
+    gemini_embedding_model: str = "text-embedding-004"
+    openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     nemotron_model: str = "nvidia/nemotron-3-ultra"
-    anthropic_api_key: str
-    claude_model: str = "claude-3-5-sonnet-20241022"
-    google_api_key: str | None = None
-    gemini_model: str = "gemini-1.5-pro"
-    openai_api_key: str
-    embedding_model: str = "text-embedding-3-small"
-    embedding_dimensions: int = 1536
+    embedding_model: str = "text-embedding-004"
+    embedding_dimensions: int = 768
     playwright_mcp_url: str = "http://localhost:3001"
     fetch_mcp_url: str = "http://localhost:3002"
     filesystem_mcp_url: str = "http://localhost:3003"
@@ -548,16 +548,16 @@ def load_config() -> AppConfig:
         supabase_validator_key=os.getenv("SUPABASE_VALIDATOR_KEY") or default_key,
         supabase_writer_key=os.getenv("SUPABASE_WRITER_KEY") or default_key,
         tavily_api_key=os.getenv("TAVILY_API_KEY", ""),
+        groq_api_key=os.getenv("GROQ_API_KEY", ""),
+        groq_model=os.getenv("GROQ_MODEL", ""),
+        google_api_key=os.getenv("GOOGLE_API_KEY", ""),
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
+        gemini_embedding_model=os.getenv("GEMINI_EMBEDDING_MODEL", "text-embedding-004"),
         openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
         openrouter_base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
         nemotron_model=os.getenv("NEMOTRON_MODEL", "nvidia/nemotron-3-ultra"),
-        anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
-        claude_model=os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022"),
-        google_api_key=os.getenv("GOOGLE_API_KEY"),
-        gemini_model=os.getenv("GEMINI_MODEL", "gemini-1.5-pro"),
-        openai_api_key=os.getenv("OPENAI_API_KEY", ""),
-        embedding_model=os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"),
-        embedding_dimensions=int(os.getenv("EMBEDDING_DIMENSIONS", "1536")),
+        embedding_model=os.getenv("EMBEDDING_MODEL", "text-embedding-004"),
+        embedding_dimensions=int(os.getenv("EMBEDDING_DIMENSIONS", "768")),
         playwright_mcp_url=os.getenv("PLAYWRIGHT_MCP_URL", "http://localhost:3001"),
         fetch_mcp_url=os.getenv("FETCH_MCP_URL", "http://localhost:3002"),
         filesystem_mcp_url=os.getenv("FILESYSTEM_MCP_URL", "http://localhost:3003"),

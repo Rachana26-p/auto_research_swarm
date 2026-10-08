@@ -63,6 +63,7 @@ from shared.models import (
     WriterInput,
     WriterOutput,
 )
+from shared.providers import ProviderQuotaExhaustedError
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,7 @@ class InterruptReason(str, Enum):
     UNCERTAIN_VERDICT = "uncertain_verdict"
     BUDGET_WARNING    = "budget_warning"
     GUARDRAIL_REJECT  = "guardrail_reject"
+    QUOTA_EXHAUSTED   = "quota_exhausted"
 
 
 class SupervisorInterrupt(Exception):
@@ -427,6 +429,11 @@ class SupervisorOrchestrator:
                 error_message=str(last_exc),
                 tool_calls=[],
             )
+            if isinstance(last_exc, ProviderQuotaExhaustedError):
+                raise SupervisorInterrupt(
+                    InterruptReason.QUOTA_EXHAUSTED,
+                    {**state, "error": str(last_exc), "status": "failed"},
+                ) from last_exc
             raise RuntimeError(
                 f"Node {node_name!r} failed after {cfg.max_retries} retries: {last_exc}"
             ) from last_exc

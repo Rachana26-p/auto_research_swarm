@@ -196,8 +196,11 @@ def atomic_write_markdown(
 # EMBEDDING CLIENT
 # ============================================================
 
+from shared.providers import get_embedding_provider
+
+
 class EmbeddingClient:
-    """Calls embedding API with retry and chunking."""
+    """Calls embedding provider (Gemini text-embedding-004 free tier) with chunking."""
 
     def __init__(
         self,
@@ -207,27 +210,14 @@ class EmbeddingClient:
     ):
         self.config = config
         self.retry_attempts = retry_attempts
-        self.retry_wait = (
-            retry_wait
-            if retry_wait is not None
-            else wait_exponential(multiplier=1, min=1, max=10)
-        )
-        self._client: httpx.AsyncClient | None = None
+        self.retry_wait = retry_wait
+        self._provider = get_embedding_provider(config=config)
 
     async def __aenter__(self) -> EmbeddingClient:
-        self._client = httpx.AsyncClient(
-            base_url="https://api.openai.com/v1",
-            headers={
-                "Authorization": f"Bearer {self.config.openai_api_key}",
-                "Content-Type": "application/json",
-            },
-            timeout=httpx.Timeout(30.0),
-        )
         return self
 
     async def __aexit__(self, *args: Any) -> None:
-        if self._client:
-            await self._client.aclose()
+        pass
 
     async def generate_embeddings(
         self,
@@ -239,36 +229,23 @@ class EmbeddingClient:
         if not texts:
             texts = [""]
 
-        # Validate EmbeddingInput
-        validated_input = EmbeddingInput(texts=texts[:100])
-
-        payload = {
-            "model": self.config.embedding_model,
-            "input": validated_input.texts,
-        }
-
-        raw_output: dict[str, Any] | None = None
-
+        records: list[EmbeddingRecord] = []
         try:
-            async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(self.retry_attempts),
-                wait=self.retry_wait,
-                retry=retry_if_exception_type((httpx.TimeoutException, httpx.ConnectError, RuntimeError)),
-                reraise=True,
-            ):
-                with attempt:
-                    try:
-                        resp = await self._client.post("/embeddings", json=payload)
-                        if resp.status_code != 200:
-                            raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:500]}")
-                        raw_output = resp.json()
-                    except (httpx.TimeoutException, httpx.ConnectError, RuntimeError) as exc:
-                        logger.warning(
-                            "Embedding attempt %d failed: %s",
-                            attempt.retry_state.attempt_number,
-                            exc,
-                        )
-                        raise
+            for idx, chunk_text in enumerate(texts[:100]):
+                vec = await self._provider.embed_text(chunk_text)
+                if len(vec) < self.config.embedding_dimensions:
+                    vec = vec + [0.0] * (self.config.embedding_dimensions - len(vec))
+                elif len(vec) > self.config.embedding_dimensions:
+                    vec = vec[: self.config.embedding_dimensions]
+
+                records.append(
+                    EmbeddingRecord(
+                        page_id=page_id,
+                        chunk_index=idx,
+                        chunk_text=chunk_text,
+                        embedding=vec,
+                    )
+                )
         except Exception as e:
             duration = int((time.perf_counter() - start) * 1000)
             tool_call = ToolCall(
@@ -282,26 +259,6 @@ class EmbeddingClient:
             raise RuntimeError(f"Embedding generation failed: {e}") from e
 
         duration = int((time.perf_counter() - start) * 1000)
-        embeddings_data = raw_output.get("data", [])
-        records: list[EmbeddingRecord] = []
-
-        for idx, item in enumerate(embeddings_data):
-            vec = item.get("embedding", [])
-            # Pad or truncate if dimensions differ slightly in mocks
-            if len(vec) < self.config.embedding_dimensions:
-                vec = vec + [0.0] * (self.config.embedding_dimensions - len(vec))
-            elif len(vec) > self.config.embedding_dimensions:
-                vec = vec[: self.config.embedding_dimensions]
-
-            records.append(
-                EmbeddingRecord(
-                    page_id=page_id,
-                    chunk_index=idx,
-                    chunk_text=texts[idx] if idx < len(texts) else "",
-                    embedding=vec,
-                )
-            )
-
         tool_call = ToolCall(
             tool_name="embedding_api",
             input_args={"chunk_count": len(texts), "model": self.config.embedding_model},

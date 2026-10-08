@@ -13,7 +13,7 @@ Autonomous multi-agent research swarm that crawls, extracts, validates, and summ
                               │ POST /runs (Goal & Budgets)
                               ▼
                       ┌───────────────┐
-                      │    Planner    │ ◄── Claude / Decompose Goal into Subtasks
+                      │    Planner    │ ◄── Groq (OpenAI-compatible) / Decompose Goal into Subtasks
                       └───────┬───────┘
                               ▼
                       ┌───────────────┐
@@ -88,11 +88,11 @@ cp .env.example .env
 
 Key environment variables:
 - `SUPABASE_URL`: Your Supabase project URL (e.g., `https://<ref>.supabase.co`)
-- `SUPABASE_SECRET_KEY` / `SUPABASE_PUBLISHABLE_KEY`: Supabase API keys
-- `TAVILY_API_KEY`: Search API for Discovery node
-- `OPENROUTER_API_KEY`: Nemotron Ultra API for extraction & summarization
-- `ANTHROPIC_API_KEY`: Claude for planning & validation
-- `OPENAI_API_KEY`: Text embeddings for the Writer agent
+- `SUPABASE_PLANNER_KEY`, `SUPABASE_DISCOVERY_KEY`, `SUPABASE_EXTRACTOR_KEY`, `SUPABASE_VALIDATOR_KEY`, `SUPABASE_WRITER_KEY`: Per-agent Supabase publishable keys
+- `GROQ_API_KEY`, `GROQ_MODEL`: Groq API credentials for Planner and Validator reasoning (free tier)
+- `GOOGLE_API_KEY`: Google Gemini API key for embeddings (`text-embedding-004`, 768 dims) and alternative validator
+- `TAVILY_API_KEY`: Search API for Discovery node (free tier)
+- `EMBEDDING_DIMENSIONS`: 768 (strictly matching Gemini `text-embedding-004`)
 - `API_KEY`: Secret key for authenticating API requests (default: `test-api-key`)
 
 ### 2. Run with Docker Compose (Recommended)
@@ -170,3 +170,51 @@ Run the automated benchmark of 10 research goals and 5 adversarial injection pag
 backend/.venv/Scripts/python backend/scripts/evaluate.py
 ```
 Outputs `results.json` and a formatted results table.
+
+---
+
+## Deployment Environment Variables (Render & Vercel)
+
+For production deployments on cloud platforms (empty values template):
+
+### Backend (Render / Cloud Run)
+```env
+SUPABASE_URL=
+SUPABASE_PLANNER_KEY=
+SUPABASE_DISCOVERY_KEY=
+SUPABASE_EXTRACTOR_KEY=
+SUPABASE_VALIDATOR_KEY=
+SUPABASE_WRITER_KEY=
+TAVILY_API_KEY=
+GROQ_API_KEY=
+GROQ_MODEL=
+GOOGLE_API_KEY=
+GEMINI_MODEL=
+GEMINI_EMBEDDING_MODEL=
+EMBEDDING_MODEL=
+EMBEDDING_DIMENSIONS=768
+API_KEY=
+FRONTEND_URL=
+KNOWLEDGE_DIR=./knowledge
+LANGGRAPH_CHECKPOINT_DIR=./.langgraph_checkpoints
+LOG_LEVEL=INFO
+LOG_FORMAT=json
+```
+
+### Frontend (Vercel)
+```env
+NEXT_PUBLIC_API_URL=
+NEXT_PUBLIC_API_KEY=
+```
+*(Note: Never configure Supabase secret keys or service-role keys in the frontend).*
+
+---
+
+## Verified Free-Tier Provider Specifications
+
+| Provider / Role | Environment Variables | Verified Free-Tier Limits | Official Documentation Checked |
+| :--- | :--- | :--- | :--- |
+| **Groq**<br>*(Planner & Validator reasoning)* | `GROQ_API_KEY`<br>`GROQ_MODEL` | 30 RPM, 6,000–30,000 TPM, 1,000–14,400 RPD (depends on model) | [Groq Rate Limits & Tier Specs](https://console.groq.com/docs/rate-limits) |
+| **Google Gemini**<br>*(Alternative validator & embeddings)* | `GOOGLE_API_KEY`<br>`GEMINI_MODEL`<br>`GEMINI_EMBEDDING_MODEL` | 15 RPM, 1,500 RPD, 1,000,000 TPM; `text-embedding-004` output dimensionality = 768 | [Gemini API Embedding Guide](https://ai.google.dev/gemini-api/docs/embeddings)<br>[Gemini Rate Limits](https://ai.google.dev/gemini-api/docs/models/gemini#rate-limits) |
+| **Tavily Search**<br>*(Discovery crawler)* | `TAVILY_API_KEY` | 1,000 monthly credits free, 20 RPM | [Tavily Pricing & Limits](https://docs.tavily.com) |
+

@@ -89,11 +89,11 @@ create index idx_guardrail_events_agent on guardrail_events(agent_name);
 create index idx_guardrail_events_type on guardrail_events(event_type);
 
 -- embeddings: pgvector storage for page chunks
--- Using 1536 dimensions for OpenAI text-embedding-3-small (free tier compatible)
+-- Using 768 dimensions for Gemini text-embedding-004 (free tier)
 create table embeddings (
     id uuid primary key default uuid_generate_v4(),
     page_id uuid not null references pages(id) on delete cascade,
-    embedding vector(1536) not null,
+    embedding vector(768) not null,
     chunk_index integer not null,
     chunk_text text not null,
     created_at timestamptz not null default now(),
