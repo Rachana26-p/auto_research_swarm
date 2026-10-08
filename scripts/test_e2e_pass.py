@@ -138,31 +138,34 @@ async def main():
         )
         run_manager.reviews[test_rev_id] = review
 
-        # Query review queue via frontend
-        reviews_resp = await client.get(f"{BASE_FRONTEND_URL}/reviews")
-        print(f"GET /api/reviews Status: {reviews_resp.status_code}")
-        pending_reviews = reviews_resp.json()
-        print(f"Pending Reviews Count: {len(pending_reviews)}")
-        target_rev = next((r for r in pending_reviews if r["id"] == str(test_rev_id)), None)
-        assert target_rev is not None, "Created review not found in /reviews!"
-        print(f"Found Pending Review {test_rev_id}: URL={target_rev['url']}")
+        # Query review queue via API
+        from api.main import app
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as api_client:
+            auth_headers = {"X-API-Key": config.api_key}
+            reviews_resp = await api_client.get("/reviews", headers=auth_headers)
+            print(f"GET /reviews Status: {reviews_resp.status_code}")
+            pending_reviews = reviews_resp.json()
+            print(f"Pending Reviews Count: {len(pending_reviews)}")
+            target_rev = next((r for r in pending_reviews if r["id"] == str(test_rev_id)), None)
+            assert target_rev is not None, "Created review not found in /reviews!"
+            print(f"Found Pending Review {test_rev_id}: URL={target_rev['url']}")
 
-        # Call Approve endpoint
-        print(f"\nCalling POST /api/reviews/{test_rev_id}/approve...")
-        approve_resp = await client.post(f"{BASE_FRONTEND_URL}/reviews/{test_rev_id}/approve")
-        print(f"Approve Status: {approve_resp.status_code}")
-        print("Approve Response:", approve_resp.json())
+            # Call Approve endpoint
+            print(f"\nCalling POST /reviews/{test_rev_id}/approve...")
+            approve_resp = await api_client.post(f"/reviews/{test_rev_id}/approve", headers=auth_headers)
+            print(f"Approve Status: {approve_resp.status_code}")
+            print("Approve Response:", approve_resp.json())
 
-        # Verify review queue is updated
-        reviews_after = (await client.get(f"{BASE_FRONTEND_URL}/reviews")).json()
-        found_after = any(r["id"] == str(test_rev_id) for r in reviews_after)
-        print(f"Review {test_rev_id} removed from pending queue: {not found_after}")
+            # Verify review queue is updated
+            reviews_after = (await api_client.get("/reviews", headers=auth_headers)).json()
+            found_after = any(r["id"] == str(test_rev_id) for r in reviews_after)
+            print(f"Review {test_rev_id} removed from pending queue: {not found_after}")
 
-        # Wait for resumed run to complete
-        await asyncio.sleep(2.0)
-        resumed_run = (await client.get(f"{BASE_FRONTEND_URL}/runs/{test_run_id}")).json()
-        print(f"Resumed Run Status: {resumed_run.get('status')}")
-        print(f"Resumed Run Pages Persisted: {resumed_run.get('pages_persisted')}")
+            # Wait for resumed run to complete
+            await asyncio.sleep(2.0)
+            resumed_run = (await api_client.get(f"/runs/{test_run_id}", headers=auth_headers)).json()
+            print(f"Resumed Run Status: {resumed_run.get('status')}")
+            print(f"Resumed Run Pages Persisted: {resumed_run.get('pages_persisted')}")
 
         print("\n" + "=" * 70)
         print("END-TO-END VERIFICATION PASS COMPLETED SUCCESSFULLY!")
