@@ -1,0 +1,108 @@
+services:
+  # ============================================================
+  # MCP Docker Servers
+  # ============================================================
+  playwright-mcp:
+    image: mcp/playwright:latest
+    ports:
+      - "3001:3001"
+    environment:
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+      - HEADLESS=true
+    restart: unless-stopped
+    networks:
+      - swarm_network
+
+  fetch-mcp:
+    image: mcp/fetch:latest
+    ports:
+      - "3002:3002"
+    environment:
+      - FETCH_TIMEOUT=30
+      - FETCH_MAX_REDIRECTS=5
+    restart: unless-stopped
+    networks:
+      - swarm_network
+
+  filesystem-mcp:
+    image: mcp/filesystem:latest
+    ports:
+      - "3003:3003"
+    environment:
+      - ALLOWED_DIRECTORIES=/workspace
+      - READ_ONLY=false
+    volumes:
+      - ./knowledge:/workspace/knowledge
+    restart: unless-stopped
+    networks:
+      - swarm_network
+
+  memory-mcp:
+    image: mcp/memory:latest
+    ports:
+      - "3004:3004"
+    restart: unless-stopped
+    networks:
+      - swarm_network
+
+  github-mcp:
+    image: mcp/github:latest
+    ports:
+      - "3005:3005"
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+    restart: unless-stopped
+    networks:
+      - swarm_network
+
+  # ============================================================
+  # Swarm Backend (FastAPI + LangGraph)
+  # ============================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - PLAYWRIGHT_MCP_URL=http://playwright-mcp:3001
+      - FETCH_MCP_URL=http://fetch-mcp:3002
+      - FILESYSTEM_MCP_URL=http://filesystem-mcp:3003
+      - MEMORY_MCP_URL=http://memory-mcp:3004
+      - GITHUB_MCP_URL=http://github-mcp:3005
+      - FRONTEND_URL=http://localhost:3000
+    volumes:
+      - ./knowledge:/app/knowledge
+      - ./.langgraph_checkpoints:/app/.langgraph_checkpoints
+    depends_on:
+      - playwright-mcp
+      - fetch-mcp
+    restart: unless-stopped
+    networks:
+      - swarm_network
+
+  # ============================================================
+  # Swarm Frontend (Next.js Bauhaus Dashboard)
+  # ============================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      - BACKEND_API_URL=http://backend:8000
+      - PORT=3000
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - swarm_network
+
+networks:
+  swarm_network:
+    driver: bridge

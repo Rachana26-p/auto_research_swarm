@@ -1,0 +1,116 @@
+# Docker Compose for MCP Servers (vibe_coding profile)
+# Run with: docker compose --profile vibe_coding -f docker-compose.mcp.yml up -d
+# Stop with: docker compose --profile vibe_coding -f docker-compose.mcp.yml down
+
+services:
+  # Playwright MCP - Browser automation for Extractor agent
+  playwright-mcp:
+    image: mcp/playwright:latest
+    profiles: ["vibe_coding"]
+    ports:
+      - "3001:3001"
+    environment:
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+      - HEADLESS=true
+    volumes:
+      - playwright_browsers:/ms-playwright
+      - ./backend/scripts:/scripts:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+    networks:
+      - mcp_network
+
+  # Fetch MCP - Lightweight HTTP fetching for Extractor agent
+  fetch-mcp:
+    image: mcp/fetch:latest
+    profiles: ["vibe_coding"]
+    ports:
+      - "3002:3002"
+    environment:
+      - FETCH_TIMEOUT=30
+      - FETCH_MAX_REDIRECTS=5
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - mcp_network
+
+  # Filesystem MCP - File operations for Writer agent (Phase 2+)
+  filesystem-mcp:
+    image: mcp/filesystem:latest
+    profiles: ["vibe_coding"]
+    ports:
+      - "3003:3003"
+    environment:
+      - ALLOWED_DIRECTORIES=/workspace,/tmp
+      - READ_ONLY=false
+    volumes:
+      - ./knowledge:/workspace/knowledge
+      - ./backend:/workspace/backend
+      - /tmp:/tmp
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - mcp_network
+
+  # Memory MCP - Persistent memory for agents (Phase 2+)
+  memory-mcp:
+    image: mcp/memory:latest
+    profiles: ["vibe_coding"]
+    ports:
+      - "3004:3004"
+    environment:
+      - MEMORY_BACKEND=sqlite
+      - MEMORY_DB_PATH=/data/memory.db
+    volumes:
+      - memory_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3004/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - mcp_network
+
+  # GitHub MCP - Repository operations (Phase 2+)
+  github-mcp:
+    image: mcp/github:latest
+    profiles: ["vibe_coding"]
+    ports:
+      - "3005:3005"
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITHUB_API_URL=https://api.github.com
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3005/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - mcp_network
+
+volumes:
+  playwright_browsers:
+  memory_data:
+
+networks:
+  mcp_network:
+    driver: bridge

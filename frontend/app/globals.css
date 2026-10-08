@@ -1,0 +1,62 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #0A0A0A;
+  --color-paper: #FAFAFA;
+  --color-red: #E63946;
+  --color-blue: #1D3557;
+  --color-yellow: #F4A300;
+  --color-green-status: #2A9D8F;
+
+  --font-display: var(--font-display), sans-serif;
+  --font-heading: var(--font-heading), sans-serif;
+  --font-body: var(--font-body), sans-serif;
+  --font-mono: var(--font-mono), monospace;
+
+  --text-display: 3.5rem;
+  --text-h1: 2.25rem;
+  --text-h2: 1.5rem;
+  --text-body: 1.0rem;
+  --text-small: 0.8125rem;
+}
+
+:root {
+  --ink: #0A0A0A;
+  --paper: #FAFAFA;
+  --red: #E63946;
+  --blue: #1D3557;
+  --yellow: #F4A300;
+  --green: #2A9D8F;
+}
+
+body {
+  background-color: #FAFAFA;
+  color: #0A0A0A;
+  font-family: var(--font-body), sans-serif;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Bauhaus Grid and structural borders */
+.border-default {
+  border: 2px solid #0A0A0A;
+}
+
+.border-accent {
+  border: 3px solid #E63946;
+}
+
+.border-blue-accent {
+  border: 3px solid #1D3557;
+}
+
+/* Sharp containers by design */
+* {
+  border-radius: 0;
+}
+
+/* Interactive control radius-sm exception (4px) */
+.radius-sm {
+  border-radius: 4px;
+}
