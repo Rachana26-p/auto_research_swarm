@@ -95,6 +95,26 @@ def record_guardrail_decision(
         event.event_type,
         event.run_id,
     )
+
+    # Real-time event dispatch to live run subscribers
+    try:
+        from api.state import run_manager
+        run_record = run_manager.get_run(event.run_id)
+        if run_record:
+            run_record.emit_event(
+                "guardrail_event",
+                {
+                    "id": str(event.id),
+                    "agent_name": str(event.agent_name),
+                    "event_type": str(event.event_type),
+                    "decision": decision,
+                    "details": d,
+                    "created_at": event.created_at.isoformat(),
+                },
+            )
+    except Exception:
+        pass
+
     return event
 
 

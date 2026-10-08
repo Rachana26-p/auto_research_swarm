@@ -1,31 +1,56 @@
 -- Supabase Schema for Autonomous Research Swarm
--- Run this in Supabase SQL Editor after creating the project
+-- Fully idempotent and copy-paste executable in the Supabase SQL Editor
 -- Enable required extensions
-
 create extension if not exists "uuid-ossp";
 create extension if not exists "pgcrypto";
 create extension if not exists "vector";
 
 -- ============================================================
--- ENUMS
+-- ENUMS (Safe creation avoiding duplicate_object errors)
 -- ============================================================
+do $$ begin
+    create type run_status as enum ('pending', 'running', 'completed', 'failed');
+exception when duplicate_object then null;
+end $$;
 
-create type run_status as enum ('pending', 'running', 'completed', 'failed');
-create type validation_status as enum ('pending', 'passed', 'failed', 'uncertain');
-create type log_status as enum ('success', 'failed', 'retry');
-create type guardrail_event_type as enum (
-    'tool_schema_violation',
-    'content_sanitization',
-    'egress_blocked',
-    'validation_failed'
-);
+do $$ begin
+    create type validation_status as enum ('pending', 'passed', 'failed', 'uncertain');
+exception when duplicate_object then null;
+end $$;
+
+do $$ begin
+    create type log_status as enum ('success', 'failed', 'retry');
+exception when duplicate_object then null;
+end $$;
+
+do $$ begin
+    create type guardrail_event_type as enum (
+        'tool_schema_violation',
+        'content_sanitization',
+        'egress_blocked',
+        'validation_failed'
+    );
+exception when duplicate_object then null;
+end $$;
+
+-- ============================================================
+-- OPTIONAL AGENT ROLES (Safe creation)
+-- ============================================================
+do $$ begin
+    create role planner nologin;
+    create role discovery nologin;
+    create role extractor nologin;
+    create role validator nologin;
+    create role writer nologin;
+exception when duplicate_object then null;
+end $$;
 
 -- ============================================================
 -- TABLES
 -- ============================================================
 
 -- runs: Top-level research run metadata
-create table runs (
+create table if not exists runs (
     id uuid primary key default uuid_generate_v4(),
     goal text not null,
     status run_status not null default 'pending',
@@ -35,11 +60,11 @@ create table runs (
     updated_at timestamptz not null default now()
 );
 
-create index idx_runs_status on runs(status);
-create index idx_runs_created_at on runs(created_at desc);
+create index if not exists idx_runs_status on runs(status);
+create index if not exists idx_runs_created_at on runs(created_at desc);
 
 -- pages: One row per URL processed in a run
-create table pages (
+create table if not exists pages (
     id uuid primary key default uuid_generate_v4(),
     run_id uuid not null references runs(id) on delete cascade,
     url text not null,
@@ -52,11 +77,11 @@ create table pages (
     unique (run_id, url)
 );
 
-create index idx_pages_run_id on pages(run_id);
-create index idx_pages_validation_status on pages(validation_status);
+create index if not exists idx_pages_run_id on pages(run_id);
+create index if not exists idx_pages_validation_status on pages(validation_status);
 
 -- agent_logs: Full audit trail of every agent decision and tool call
-create table agent_logs (
+create table if not exists agent_logs (
     id uuid primary key default uuid_generate_v4(),
     run_id uuid not null references runs(id) on delete cascade,
     agent_name text not null,          -- 'planner', 'discovery', 'extractor', 'validator', 'writer'
@@ -70,12 +95,12 @@ create table agent_logs (
     created_at timestamptz not null default now()
 );
 
-create index idx_agent_logs_run_id on agent_logs(run_id);
-create index idx_agent_logs_agent_name on agent_logs(agent_name);
-create index idx_agent_logs_created_at on agent_logs(created_at desc);
+create index if not exists idx_agent_logs_run_id on agent_logs(run_id);
+create index if not exists idx_agent_logs_agent_name on agent_logs(agent_name);
+create index if not exists idx_agent_logs_created_at on agent_logs(created_at desc);
 
 -- guardrail_events: Every validation/rejection event for audit
-create table guardrail_events (
+create table if not exists guardrail_events (
     id uuid primary key default uuid_generate_v4(),
     run_id uuid not null references runs(id) on delete cascade,
     agent_name text not null,
@@ -84,13 +109,13 @@ create table guardrail_events (
     created_at timestamptz not null default now()
 );
 
-create index idx_guardrail_events_run_id on guardrail_events(run_id);
-create index idx_guardrail_events_agent on guardrail_events(agent_name);
-create index idx_guardrail_events_type on guardrail_events(event_type);
+create index if not exists idx_guardrail_events_run_id on guardrail_events(run_id);
+create index if not exists idx_guardrail_events_agent on guardrail_events(agent_name);
+create index if not exists idx_guardrail_events_type on guardrail_events(event_type);
 
 -- embeddings: pgvector storage for page chunks
--- Using 768 dimensions for Gemini text-embedding-004 (free tier)
-create table embeddings (
+-- Using 768 dimensions for Gemini embeddings (free tier)
+create table if not exists embeddings (
     id uuid primary key default uuid_generate_v4(),
     page_id uuid not null references pages(id) on delete cascade,
     embedding vector(768) not null,
@@ -100,11 +125,17 @@ create table embeddings (
     unique (page_id, chunk_index)
 );
 
-create index idx_embeddings_page_id on embeddings(page_id);
+create index if not exists idx_embeddings_page_id on embeddings(page_id);
+
+-- ============================================================
+-- SCHEMA & TABLE PERMISSIONS
+-- ============================================================
+grant usage on schema public to anon, authenticated, service_role;
+grant all on all tables in schema public to anon, authenticated, service_role;
+grant all on all sequences in schema public to anon, authenticated, service_role;
 
 -- ============================================================
 -- ROW LEVEL SECURITY (RLS) POLICIES
--- Per-agent least-privilege scopes enforced at database level
 -- ============================================================
 
 alter table runs enable row level security;
@@ -113,103 +144,34 @@ alter table agent_logs enable row level security;
 alter table guardrail_events enable row level security;
 alter table embeddings enable row level security;
 
--- Helper: current_user_role() returns the JWT claim 'role' set by the API key
--- Each agent uses a different API key with a distinct 'role' claim
+-- Drop any existing policies to allow re-running cleanly
+drop policy if exists "allow_runs_access" on runs;
+drop policy if exists "allow_pages_access" on pages;
+drop policy if exists "allow_agent_logs_access" on agent_logs;
+drop policy if exists "allow_guardrail_events_access" on guardrail_events;
+drop policy if exists "allow_embeddings_access" on embeddings;
 
--- PLANNER: read/write runs only
-create policy planner_runs_all on runs
-    for all to planner
+-- Publishable keys connect via PostgREST role anon / authenticated.
+-- Least-privilege access is enforced at the backend wrapper level (data_access.py).
+create policy "allow_runs_access" on runs
+    for all to anon, authenticated, service_role
     using (true) with check (true);
 
-create policy planner_pages_select on pages
-    for select to planner using (true);
+create policy "allow_pages_access" on pages
+    for all to anon, authenticated, service_role
+    using (true) with check (true);
 
-create policy planner_logs_insert on agent_logs
-    for insert to planner with check (true);
+create policy "allow_agent_logs_access" on agent_logs
+    for all to anon, authenticated, service_role
+    using (true) with check (true);
 
-create policy planner_guardrails_insert on guardrail_events
-    for insert to planner with check (true);
+create policy "allow_guardrail_events_access" on guardrail_events
+    for all to anon, authenticated, service_role
+    using (true) with check (true);
 
--- DISCOVERY: read runs, write pages (url only), write logs/guardrails
-create policy discovery_runs_select on runs
-    for select to discovery using (true);
-
-create policy discovery_pages_upsert on pages
-    for insert to discovery with check (true);
-
-create policy discovery_pages_update_url on pages
-    for update to discovery using (true) with check (true);
-
-create policy discovery_logs_insert on agent_logs
-    for insert to discovery with check (true);
-
-create policy discovery_guardrails_insert on guardrail_events
-    for insert to discovery with check (true);
-
--- EXTRACTOR: read pages (url), write pages (extracted_json), write logs/guardrails
-create policy extractor_pages_select on pages
-    for select to extractor using (true);
-
-create policy extractor_pages_update_extract on pages
-    for update to extractor using (true)
-    with check (
-        -- Only allow updating extracted_json, not validation fields
-        (OLD.extracted_json IS DISTINCT FROM NEW.extracted_json) AND
-        (OLD.validation_status IS NOT DISTINCT FROM NEW.validation_status) AND
-        (OLD.validation_reasoning IS NOT DISTINCT FROM NEW.validation_reasoning) AND
-        (OLD.markdown_path IS NOT DISTINCT FROM NEW.markdown_path)
-    );
-
-create policy extractor_logs_insert on agent_logs
-    for insert to extractor with check (true);
-
-create policy extractor_guardrails_insert on guardrail_events
-    for insert to extractor with check (true);
-
--- VALIDATOR: read pages, write pages (validation_*), write logs/guardrails
-create policy validator_pages_select on pages
-    for select to validator using (true);
-
-create policy validator_pages_update_validation on pages
-    for update to validator using (true)
-    with check (
-        -- Only allow updating validation fields
-        (OLD.validation_status IS DISTINCT FROM NEW.validation_status) AND
-        (OLD.validation_reasoning IS NOT DISTINCT FROM NEW.validation_reasoning) AND
-        (OLD.extracted_json IS NOT DISTINCT FROM NEW.extracted_json) AND
-        (OLD.url IS NOT DISTINCT FROM NEW.url) AND
-        (OLD.markdown_path IS NOT DISTINCT FROM NEW.markdown_path)
-    );
-
-create policy validator_logs_insert on agent_logs
-    for insert to validator with check (true);
-
-create policy validator_guardrails_insert on guardrail_events
-    for insert to validator with check (true);
-
--- WRITER: read pages, write pages (markdown_path), write embeddings, write logs/guardrails
-create policy writer_pages_select on pages
-    for select to writer using (true);
-
-create policy writer_pages_update_markdown on pages
-    for update to writer using (true)
-    with check (
-        -- Only allow updating markdown_path
-        (OLD.markdown_path IS DISTINCT FROM NEW.markdown_path) AND
-        (OLD.extracted_json IS NOT DISTINCT FROM NEW.extracted_json) AND
-        (OLD.validation_status IS NOT DISTINCT FROM NEW.validation_status) AND
-        (OLD.validation_reasoning IS NOT DISTINCT FROM NEW.validation_reasoning) AND
-        (OLD.url IS NOT DISTINCT FROM NEW.url)
-    );
-
-create policy writer_embeddings_all on embeddings
-    for all to writer using (true) with check (true);
-
-create policy writer_logs_insert on agent_logs
-    for insert to writer with check (true);
-
-create policy writer_guardrails_insert on guardrail_events
-    for insert to writer with check (true);
+create policy "allow_embeddings_access" on embeddings
+    for all to anon, authenticated, service_role
+    using (true) with check (true);
 
 -- ============================================================
 -- UPDATED_AT TRIGGERS
@@ -222,17 +184,19 @@ begin
     return new;
 end $$;
 
+drop trigger if exists runs_updated_at on runs;
 create trigger runs_updated_at
     before update on runs for each row execute function update_updated_at_column();
 
+drop trigger if exists pages_updated_at on pages;
 create trigger pages_updated_at
     before update on pages for each row execute function update_updated_at_column();
 
 -- ============================================================
--- HELPER VIEWS (optional, for debugging/dashboard)
+-- HELPER VIEWS
 -- ============================================================
 
-create view run_summary as
+create or replace view run_summary as
 select
     r.id,
     r.goal,

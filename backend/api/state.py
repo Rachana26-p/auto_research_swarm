@@ -160,6 +160,57 @@ class RunManager:
                 for k in ("pages_processed", "pages_persisted", "tool_calls_made", "tokens_used", "wall_clock_seconds")
                 if k in state_snapshot
             })
+            # Format live AI reasoning and output text for this node
+            agent_text = ""
+            details: dict[str, Any] = {}
+            if node_name == "planner":
+                subtasks = state_snapshot.get("subtasks", [])
+                reasoning = state_snapshot.get("reasoning", "")
+                details = {"subtasks": subtasks, "reasoning": reasoning}
+                subtask_lines = [
+                    f"  {i+1}. {s.get('description', '')}\n     [Domains: {', '.join(s.get('candidate_domains', []))}]"
+                    for i, s in enumerate(subtasks)
+                ]
+                agent_text = f"Goal decomposition generated {len(subtasks)} research subtasks:\n\n" + "\n\n".join(subtask_lines)
+                if reasoning:
+                    agent_text += f"\n\nStrategic Reasoning:\n{reasoning}"
+            elif node_name == "discovery":
+                ranked = state_snapshot.get("ranked_urls", [])
+                details = {"ranked_urls": ranked}
+                url_lines = [
+                    f"  • {u.get('url', '')} (relevance score: {u.get('relevance_score', 0):.2f}, domain: {u.get('domain', '')})"
+                    for u in ranked[:5]
+                ]
+                agent_text = f"Discovered and prioritized {len(ranked)} candidate research targets:\n\n" + (
+                    "\n".join(url_lines) if url_lines else "  No valid candidate URLs found for subtask criteria."
+                )
+            elif node_name == "extractor":
+                ep = state_snapshot.get("extracted_page", {})
+                title = ep.get("title", "Extracted Page")
+                summary = ep.get("summary", "")
+                headings = ep.get("headings", [])
+                details = {"title": title, "summary": summary, "headings": headings}
+                heading_str = ", ".join(headings[:4]) if headings else "None"
+                agent_text = f"Extracted structured content for: \"{title}\"\n\nSummary:\n{summary}\n\nKey Headings Identified:\n{heading_str}"
+            elif node_name == "validator":
+                val_res = state_snapshot.get("validation_results", {})
+                v_obj = next(iter(val_res.values()), {}) if isinstance(val_res, dict) and val_res else {}
+                verdict = str(v_obj.get("verdict", "uncertain")).upper()
+                conf = float(v_obj.get("confidence", 0.0))
+                details = v_obj
+                agent_text = f"Validation Verdict: [{verdict}] (Confidence: {conf*100:.1f}%)\n"
+                if v_obj.get("faithfulness_notes"):
+                    agent_text += f"\nFaithfulness Assessment:\n{v_obj.get('faithfulness_notes')}\n"
+                if v_obj.get("relevance_notes"):
+                    agent_text += f"\nRelevance Assessment:\n{v_obj.get('relevance_notes')}"
+                if v_obj.get("safety_flags"):
+                    agent_text += f"\n\nSafety Flags: {', '.join(v_obj.get('safety_flags'))}"
+            elif node_name == "writer":
+                md_path = state_snapshot.get("markdown_path", "")
+                emb = state_snapshot.get("embedding_generated", False)
+                details = {"markdown_path": md_path, "embedding_generated": emb}
+                agent_text = f"Knowledge Persistence Complete:\n• Markdown Document: {md_path}\n• Vector Embeddings: {'Generated 768-dim vector in pgvector' if emb else 'Skipped/Offline fallback'}"
+
             record.emit_event(
                 "node_transition",
                 {
@@ -167,6 +218,8 @@ class RunManager:
                     "status": str(status),
                     "duration_ms": duration_ms,
                     "error_message": error_message,
+                    "agent_text": agent_text,
+                    "details": details,
                 },
             )
 
@@ -214,27 +267,7 @@ class RunManager:
             record.checkpoint_state = interrupt.state_snapshot
             record.summary.update(interrupt.state_snapshot)
 
-            # If UNCERTAIN_VERDICT, create a ReviewRecord for human-in-the-loop
-            if interrupt.reason == InterruptReason.UNCERTAIN_VERDICT:
-                rev_id = uuid4()
-                review = ReviewRecord(
-                    review_id=rev_id,
-                    run_id=record.run_id,
-                    page_id=UUID(str(interrupt.state_snapshot.get("page_id", uuid4()))),
-                    url=str(interrupt.state_snapshot.get("url", "")),
-                    validator_output=interrupt.state_snapshot.get("validator_output", {}),
-                    checkpoint_state=interrupt.state_snapshot,
-                )
-                self.reviews[rev_id] = review
-                record.emit_event(
-                    "run_interrupted",
-                    {
-                        "reason": interrupt.reason.value,
-                        "review_id": str(rev_id),
-                        "details": interrupt.state_snapshot,
-                    },
-                )
-            elif interrupt.reason == InterruptReason.QUOTA_EXHAUSTED:
+            if interrupt.reason == InterruptReason.QUOTA_EXHAUSTED:
                 record.status = "failed"
                 record.completed_at = datetime.utcnow()
                 record.error_message = f"Free-tier quota exhausted: {interrupt.state_snapshot.get('error', 'Rate limit exceeded')}"
@@ -247,9 +280,31 @@ class RunManager:
                     },
                 )
             else:
+                # Any human-reviewable interrupt (UNCERTAIN_VERDICT, BUDGET_WARNING, GUARDRAIL_REJECT)
+                rev_id = uuid4()
+                val_data = interrupt.state_snapshot.get("validator_output") or {
+                    "verdict": interrupt.reason.value,
+                    "confidence": 0.5,
+                    "relevance_notes": f"Interrupted: {interrupt.reason.value}",
+                    "faithfulness_notes": interrupt.state_snapshot.get("error", "Human confirmation required"),
+                    "extracted_json": interrupt.state_snapshot.get("extracted_json", {}),
+                }
+                review = ReviewRecord(
+                    review_id=rev_id,
+                    run_id=record.run_id,
+                    page_id=UUID(str(interrupt.state_snapshot.get("page_id", uuid4()))),
+                    url=str(interrupt.state_snapshot.get("url", "")),
+                    validator_output=val_data,
+                    checkpoint_state=interrupt.state_snapshot,
+                )
+                self.reviews[rev_id] = review
                 record.emit_event(
                     "run_interrupted",
-                    {"reason": interrupt.reason.value, "details": interrupt.state_snapshot},
+                    {
+                        "reason": interrupt.reason.value,
+                        "review_id": str(rev_id),
+                        "details": interrupt.state_snapshot,
+                    },
                 )
 
         except Exception as exc:

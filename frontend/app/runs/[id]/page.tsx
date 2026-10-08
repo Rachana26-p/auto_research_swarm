@@ -37,6 +37,19 @@ function RunDetailContent({ params }: PageProps) {
 
   // Guardrail Events for this run
   const [guardrailEvents, setGuardrailEvents] = useState<GuardrailEventResponse[]>([]);
+
+  // Agent output text stream (human-readable AI work text)
+  const [agentOutputs, setAgentOutputs] = useState<
+    Array<{
+      id: string;
+      node: string;
+      status: string;
+      duration_ms?: number;
+      agent_text: string;
+      timestamp: string;
+    }>
+  >([]);
+
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   // Initial Run Fetch
@@ -115,6 +128,20 @@ function RunDetailContent({ params }: PageProps) {
           const nodeKey = payload.node.toLowerCase() as TimelineNode["key"];
           setCurrentNode(nodeKey);
 
+          if (payload.agent_text) {
+            setAgentOutputs((prev) => [
+              ...prev,
+              {
+                id: `${payload.node}-${Date.now()}`,
+                node: payload.node as string,
+                status: (payload.status as string) || "SUCCESS",
+                duration_ms: payload.duration_ms,
+                agent_text: payload.agent_text as string,
+                timestamp: payload.timestamp || new Date().toISOString(),
+              },
+            ]);
+          }
+
           setTimelineNodes((prev) =>
             prev.map((n) => {
               if (n.key === nodeKey) {
@@ -127,6 +154,20 @@ function RunDetailContent({ params }: PageProps) {
               return n;
             })
           );
+        }
+
+        // Process live guardrail event
+        if (payload.event_type === "guardrail_event") {
+          const gEvent: GuardrailEventResponse = {
+            id: (payload.id as string) || String(Date.now()),
+            run_id: (payload.run_id as string) || runId,
+            agent_name: (payload.agent_name as string) || "guardrail",
+            event_type: (payload.event_type as string) || "audit",
+            decision: (payload.decision as string) || "PASS",
+            details: (payload.details as Record<string, unknown>) || {},
+            created_at: (payload.created_at as string) || new Date().toISOString(),
+          };
+          setGuardrailEvents((prev) => [gEvent, ...prev]);
         }
 
         // Process run events
@@ -280,6 +321,75 @@ function RunDetailContent({ params }: PageProps) {
           </span>
         </div>
         <RunTimeline currentNode={currentNode} nodes={timelineNodes} />
+      </div>
+
+      {/* Live Agent Reasoning & Work Text Stream (Like AI Chat / Output Stream) */}
+      <div className="border-2 border-[#0A0A0A] bg-[#FAFAFA] p-6 space-y-4">
+        <div className="flex items-center justify-between pb-3 border-b-2 border-[#0A0A0A]">
+          <div className="flex items-center gap-2">
+            <span className="w-3 h-3 bg-[#E63946] inline-block" />
+            <h2 className="font-['Space_Grotesk'] font-bold text-sm uppercase tracking-wide">
+              Agent Work & Reasoning Stream // Live Text Output
+            </h2>
+          </div>
+          <span className="font-mono text-xs text-[#0A0A0A]/60">
+            {agentOutputs.length} AGENT STAGES COMPLETED
+          </span>
+        </div>
+
+        {agentOutputs.length === 0 ? (
+          <div className="border border-dashed border-[#0A0A0A]/30 p-8 text-center bg-[#FAFAFA]">
+            <div className="inline-block animate-pulse w-2.5 h-2.5 bg-[#1D3557] mr-2" />
+            <span className="font-mono text-xs text-[#0A0A0A]/70 uppercase">
+              {run.status === "running"
+                ? `Agent [${currentNode.toUpperCase()}] is actively reasoning and processing...`
+                : "Awaiting agent execution output..."}
+            </span>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {agentOutputs.map((out) => (
+              <div
+                key={out.id}
+                className="border-2 border-[#0A0A0A] bg-[#FFFFFF] p-5 space-y-3 shadow-none"
+              >
+                <div className="flex items-center justify-between pb-2 border-b border-[#0A0A0A]/15 text-xs font-mono">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`w-2 h-2 ${
+                        out.status === "FAILED" ? "bg-[#E63946]" : "bg-[#2A9D8F]"
+                      }`}
+                    />
+                    <span className="font-bold uppercase tracking-wider text-[#0A0A0A]">
+                      {out.node.toUpperCase()} AGENT
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3 text-[#0A0A0A]/60">
+                    {out.duration_ms !== undefined && (
+                      <span className="px-1.5 py-0.5 border border-[#0A0A0A]/20 bg-[#0A0A0A]/5">
+                        {out.duration_ms}ms
+                      </span>
+                    )}
+                    <span>{new Date(out.timestamp).toLocaleTimeString()}</span>
+                  </div>
+                </div>
+
+                <pre className="font-mono text-xs text-[#0A0A0A] whitespace-pre-wrap leading-relaxed select-text bg-[#FAFAFA] p-4 border border-[#0A0A0A]/20 overflow-x-auto">
+                  {out.agent_text}
+                </pre>
+              </div>
+            ))}
+
+            {run.status === "running" && (
+              <div className="flex items-center gap-2 text-xs font-mono text-[#1D3557] p-3 border border-dashed border-[#1D3557]/40 bg-[#1D3557]/5">
+                <span className="w-2 h-2 bg-[#1D3557] animate-ping" />
+                <span className="uppercase font-bold">
+                  [{currentNode.toUpperCase()}] Agent is working & streaming output...
+                </span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Budget Usage Bars Grid */}

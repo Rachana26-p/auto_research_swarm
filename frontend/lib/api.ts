@@ -97,6 +97,7 @@ export interface SSEEvent {
   status?: string;
   duration_ms?: number;
   error_message?: string | null;
+  agent_text?: string;
   summary?: Record<string, unknown>;
   reason?: string;
   review_id?: string;
