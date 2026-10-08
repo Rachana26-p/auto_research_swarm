@@ -268,6 +268,19 @@ class LLMPlanner:
             "response_format": {"type": "json_object"},
         }
 
+        if not self.config.anthropic_api_key and not self.config.openrouter_api_key:
+            logger.info("Planner using offline deterministic decomposition (no API key configured)")
+            return json.dumps({
+                "subtasks": [
+                    {
+                        "subtask_id": "sub_1",
+                        "description": f"Empirical literature review on {user_prompt[:60].strip()}",
+                        "candidate_domains": ["arxiv.org", "wikipedia.org"],
+                    }
+                ],
+                "reasoning": "Offline deterministic planning fallback",
+            })
+
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(self.retry_attempts),
             wait=self.retry_wait,
@@ -277,6 +290,21 @@ class LLMPlanner:
             with attempt:
                 try:
                     resp = await self._client.post("/chat/completions", json=payload)
+                    if resp.status_code in (400, 401, 403):
+                        logger.warning(
+                            "Planner LLM returned HTTP %d, falling back to deterministic planning",
+                            resp.status_code,
+                        )
+                        return json.dumps({
+                            "subtasks": [
+                                {
+                                    "subtask_id": "sub_1",
+                                    "description": f"Empirical literature review on {user_prompt[:60].strip()}",
+                                    "candidate_domains": ["arxiv.org", "wikipedia.org"],
+                                }
+                            ],
+                            "reasoning": "Offline deterministic planning fallback",
+                        })
                     if resp.status_code != 200:
                         raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:500]}")
                     data = resp.json()

@@ -67,7 +67,7 @@ class TestAppConfig:
 
     def test_missing_required_key_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test that missing required keys are rejected."""
-        # Don't set any env vars - all should be missing
+        monkeypatch.setenv("SUPABASE_URL", "")
         with pytest.raises(ValidationError):
             load_config()
 

@@ -52,7 +52,15 @@ class RunRecord:
             "wall_clock_seconds": 0.0,
             "errors": [],
         }
-        self.events: list[dict[str, Any]] = []
+        self.events: list[dict[str, Any]] = [
+            {
+                "run_id": str(run_id),
+                "event_type": "run_created",
+                "timestamp": self.created_at.isoformat(),
+                "status": "pending",
+                "goal": goal,
+            }
+        ]
         self._subscribers: list[asyncio.Queue] = []
         self.checkpoint_state: Optional[dict[str, Any]] = None
         self.orchestrator: Optional[SupervisorOrchestrator] = None

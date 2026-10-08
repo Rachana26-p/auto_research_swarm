@@ -186,6 +186,10 @@ def test_stream_run_events_sse(client: TestClient):
         json={"goal": "SSE stream verification"},
     )
     run_id = post_resp.json()["id"]
+    rec = run_manager.get_run(UUID(run_id))
+    if rec:
+        rec.status = "completed"
+        rec.emit_event("run_completed", {"summary": {}})
 
     # Request SSE stream with stream=True
     with client.stream("GET", f"/runs/{run_id}/events", headers={"X-API-Key": TEST_API_KEY}) as sse_resp:
