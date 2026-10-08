@@ -107,10 +107,15 @@ export interface SSEEvent {
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const isServer = typeof window === "undefined";
-  const baseUrl = isServer
-    ? process.env.BACKEND_API_URL || "http://localhost:8000"
-    : "/api";
-  const url = `${baseUrl}${path}`;
+  let url: string;
+  if (isServer) {
+    const base = process.env.BACKEND_SERVICE_URL || process.env.BACKEND_API_URL || "http://localhost:8000";
+    const normalizedBase = base.endsWith("/") ? base : `${base}/`;
+    const cleanPath = path.startsWith("/") ? path.slice(1) : path;
+    url = new URL(cleanPath, normalizedBase).toString();
+  } else {
+    url = `/api${path.startsWith("/") ? path : `/${path}`}`;
+  }
 
   const headers: Record<string, string> = {
     Accept: "application/json",

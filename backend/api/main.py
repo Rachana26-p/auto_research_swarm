@@ -39,11 +39,13 @@ def create_app() -> FastAPI:
         version="1.0.0",
     )
 
-    # Restrict CORS origin strictly to frontend origin from env
+    # Restrict CORS origin to frontend origin and Vercel domains
     frontend_origin = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+    origins = list({frontend_origin, "http://localhost:3000", "http://127.0.0.1:3000"})
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[frontend_origin],
+        allow_origins=origins,
+        allow_origin_regex=r"https://.*\.vercel\.app",
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["*"],

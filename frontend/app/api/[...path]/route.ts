@@ -1,19 +1,30 @@
 import { NextRequest } from "next/server";
 
-const BACKEND_URL = process.env.BACKEND_API_URL || "http://localhost:8000";
-const API_KEY = process.env.BACKEND_API_KEY || process.env.API_KEY || "test-api-key";
+function getBackendBaseUrl(): string {
+  return process.env.BACKEND_SERVICE_URL || process.env.BACKEND_API_URL || "http://localhost:8000";
+}
+
+function getApiKey(): string {
+  return process.env.BACKEND_API_KEY || process.env.API_KEY || "test-api-key";
+}
+
+function buildBackendUrl(path: string[], search: string): string {
+  const base = getBackendBaseUrl();
+  const normalizedBase = base.endsWith("/") ? base : `${base}/`;
+  const relativePath = path.join("/").replace(/^\//, "");
+  return new URL(`${relativePath}${search}`, normalizedBase).toString();
+}
 
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ) {
   const { path } = await params;
-  const targetPath = "/" + path.join("/");
   const search = request.nextUrl.search;
-  const targetUrl = `${BACKEND_URL}${targetPath}${search}`;
+  const targetUrl = buildBackendUrl(path, search);
 
   const headers = new Headers();
-  headers.set("X-API-Key", API_KEY);
+  headers.set("X-API-Key", getApiKey());
   headers.set("Accept", request.headers.get("Accept") || "application/json");
 
   try {
@@ -53,13 +64,12 @@ export async function POST(
   { params }: { params: Promise<{ path: string[] }> }
 ) {
   const { path } = await params;
-  const targetPath = "/" + path.join("/");
   const search = request.nextUrl.search;
-  const targetUrl = `${BACKEND_URL}${targetPath}${search}`;
+  const targetUrl = buildBackendUrl(path, search);
 
   const bodyText = await request.text();
   const headers = new Headers();
-  headers.set("X-API-Key", API_KEY);
+  headers.set("X-API-Key", getApiKey());
   headers.set("Content-Type", "application/json");
 
   try {
