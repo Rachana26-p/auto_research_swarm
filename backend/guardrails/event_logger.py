@@ -38,17 +38,37 @@ async def log_guardrail_event(
     if not config or not config.supabase_url:
         return
 
+    db_event_type = event.event_type
+    if hasattr(db_event_type, "value"):
+        db_event_type = db_event_type.value
+    db_event_type = str(db_event_type).lower()
+
+    valid_types = {
+        "tool_schema_violation",
+        "content_sanitization",
+        "egress_blocked",
+        "validation_failed",
+    }
+    if db_event_type not in valid_types:
+        if "schema" in db_event_type:
+            db_event_type = "tool_schema_violation"
+        elif "egress" in db_event_type:
+            db_event_type = "egress_blocked"
+        else:
+            db_event_type = "content_sanitization"
+
     payload = {
         "id": str(event.id),
         "run_id": str(event.run_id),
-        "agent_name": event.agent_name,
-        "event_type": event.event_type,
+        "agent_name": event.agent_name.value if hasattr(event.agent_name, "value") else str(event.agent_name),
+        "event_type": db_event_type,
         "details": event.details,
         "created_at": event.created_at.isoformat(),
     }
+    key = config.supabase_secret_key or config.supabase_validator_key
     headers = {
-        "apikey": config.supabase_validator_key,
-        "Authorization": f"Bearer {config.supabase_validator_key}",
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
     }
     url = f"{config.supabase_url}/rest/v1/guardrail_events"

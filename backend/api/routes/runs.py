@@ -22,6 +22,7 @@ router = APIRouter(prefix="/runs", tags=["runs"], dependencies=[Depends(verify_a
 
 def _to_run_response(record: RunRecord) -> RunResponse:
     s = record.summary
+    b = record.budget_config
     return RunResponse(
         id=record.run_id,
         goal=record.goal,
@@ -36,6 +37,9 @@ def _to_run_response(record: RunRecord) -> RunResponse:
         tokens_used=s.get("tokens_used", 0),
         wall_clock_seconds=float(s.get("wall_clock_seconds", 0.0)),
         error_message=record.error_message,
+        max_pages=b.max_pages if b else 20,
+        max_tokens=b.max_tokens if b else 500000,
+        max_tool_calls=b.max_tool_calls if b else 200,
     )
 
 

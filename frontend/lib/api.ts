@@ -27,6 +27,10 @@ export interface RunResponse {
   tokens_used: number;
   wall_clock_seconds: number;
   error_message?: string | null;
+  max_pages?: number;
+  max_tokens?: number;
+  max_tool_calls?: number;
+  max_wall_seconds?: number;
 }
 
 export interface RunSummaryResponse {
@@ -102,6 +106,10 @@ export interface SSEEvent {
   reason?: string;
   review_id?: string;
   details?: Record<string, unknown>;
+  pages_processed?: number;
+  tool_calls_made?: number;
+  tokens_used?: number;
+  wall_clock_seconds?: number;
   [key: string]: unknown;
 }
 

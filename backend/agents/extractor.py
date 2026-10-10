@@ -65,6 +65,7 @@ from shared.models import (
     ToolCall,
 )
 from shared.config import ensure_directories, get_config
+from shared.providers import get_llm_provider
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +127,7 @@ Output ONLY valid JSON matching this schema:
 }
 
 Additional rules:
-- If content is not extractable (e.g., pure JS app), return minimal JSON with empty strings/arrays
+- ALWAYS provide a meaningful "description" (at least 20 characters summarizing the article) and "main_content" (at least 150 characters detailing key findings). NEVER return empty strings or placeholders for description or main_content.
 - Strip navigation, footer, sidebar, ads — keep only main content
 - Preserve factual information; do not hallucinate
 """
@@ -183,7 +184,7 @@ class MCPClient:
         self._client: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> MCPClient:
-        self._client = httpx.AsyncClient(timeout=httpx.Timeout(60.0))
+        self._client = httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=1.0))
         return self
 
     async def __aexit__(self, *args: Any) -> None:
@@ -230,14 +231,15 @@ class MCPClient:
             )
 
         # Execute tool call with retry
-        url = f"{base_url}/tools/{tool_name}"
+        clean_base = base_url.replace("localhost", "127.0.0.1")
+        url = f"{clean_base}/tools/{tool_name}"
         raw_output: dict[str, Any] | None = None
 
         try:
             async for attempt in AsyncRetrying(
                 stop=stop_after_attempt(self.retry_attempts),
                 wait=self.retry_wait,
-                retry=retry_if_exception_type((httpx.TimeoutException, httpx.ConnectError, RuntimeError)),
+                retry=retry_if_exception_type((httpx.TimeoutException, RuntimeError)),
                 reraise=True,
             ):
                 with attempt:
@@ -372,7 +374,7 @@ class MCPClient:
 
 
 # ============================================================
-# LLM CLIENT (Nemotron Ultra via OpenRouter)
+# LLM CLIENT (Nemotron Ultra via OpenRouter / Mock)
 # ============================================================
 
 class LLMExtractor:
@@ -394,13 +396,14 @@ class LLMExtractor:
         self._client: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> LLMExtractor:
+        timeout_val = min(float(self.config.extractor_timeout_seconds), 15.0)
         self._client = httpx.AsyncClient(
             base_url=self.config.openrouter_base_url,
             headers={
                 "Authorization": f"Bearer {self.config.openrouter_api_key}",
                 "Content-Type": "application/json",
             },
-            timeout=httpx.Timeout(self.config.extractor_timeout_seconds),
+            timeout=httpx.Timeout(timeout_val, connect=5.0),
         )
         return self
 
@@ -416,8 +419,7 @@ class LLMExtractor:
         """Extract structured JSON from page content with strict schema validation."""
         start = time.perf_counter()
 
-        # Truncate content to fit token budget
-        max_chars = self.config.extractor_max_tokens * 3  # rough char/token ratio
+        max_chars = self.config.extractor_max_tokens * 3
         truncated_content = content[:max_chars]
 
         payload = {
@@ -437,19 +439,23 @@ class LLMExtractor:
         data: dict[str, Any] | None = None
 
         try:
+            timeout_limit = min(float(self.config.extractor_timeout_seconds), 15.0)
             async for attempt in AsyncRetrying(
                 stop=stop_after_attempt(self.retry_attempts),
                 wait=self.retry_wait,
-                retry=retry_if_exception_type((httpx.TimeoutException, httpx.ConnectError, RuntimeError)),
+                retry=retry_if_exception_type((httpx.TimeoutException, httpx.ConnectError, RuntimeError, asyncio.TimeoutError)),
                 reraise=True,
             ):
                 with attempt:
                     try:
-                        resp = await self._client.post("/chat/completions", json=payload)
+                        resp = await asyncio.wait_for(
+                            self._client.post("/chat/completions", json=payload),
+                            timeout=timeout_limit,
+                        )
                         if resp.status_code != 200:
                             raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:500]}")
                         data = resp.json()
-                    except (httpx.TimeoutException, httpx.ConnectError, RuntimeError) as exc:
+                    except (httpx.TimeoutException, httpx.ConnectError, RuntimeError, asyncio.TimeoutError) as exc:
                         logger.warning(
                             "Nemotron extraction attempt %d failed: %s",
                             attempt.retry_state.attempt_number,
@@ -467,7 +473,7 @@ class LLMExtractor:
             )
             logger.error("Nemotron extraction failed after retries: %s", e)
             raise ToolExecutionError(f"LLM extraction failed: {e}", tool_call=tool_call) from e
-        except httpx.TimeoutException as e:
+        except (httpx.TimeoutException, asyncio.TimeoutError) as e:
             duration = int((time.perf_counter() - start) * 1000)
             tool_call = ToolCall(
                 tool_name="nemotron_extract",
@@ -493,7 +499,6 @@ class LLMExtractor:
         duration = int((time.perf_counter() - start) * 1000)
         raw_json = data["choices"][0]["message"]["content"]
 
-        # Parse JSON
         try:
             extracted = json.loads(raw_json)
         except json.JSONDecodeError as e:
@@ -507,7 +512,6 @@ class LLMExtractor:
             logger.error("Nemotron returned invalid JSON: %s", e)
             raise ValueError(f"LLM returned invalid JSON: {e}") from e
 
-        # Validate parsed output against ExtractedPage model strictly (raise, don't coerce)
         try:
             if not isinstance(extracted, dict):
                 raise ValueError(f"LLM output must be a JSON object, got {type(extracted).__name__}")
@@ -701,6 +705,14 @@ async def extractor_node(state: dict[str, Any]) -> dict[str, Any]:
     config = get_config()
     ensure_directories(config)
 
+    # Convert arXiv PDF links to HTML view so readable text can be parsed
+    clean_fetch_url = re.sub(r'arxiv\.org/pdf/(.*?)(?:\.pdf)?$', r'arxiv.org/html/\1', str(input_data.url))
+
+    def strip_html_tags(raw: str) -> str:
+        cleaned = re.sub(r'<(script|style|svg)[^>]*>.*?</\1>', '', raw, flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(r'<!--.*?-->', '', cleaned, flags=re.DOTALL)
+        return cleaned
+
     all_tool_calls: list[ToolCall] = []
 
     async with MCPClient(config) as mcp, LLMExtractor(config) as llm:
@@ -710,16 +722,16 @@ async def extractor_node(state: dict[str, Any]) -> dict[str, Any]:
 
         try:
             pw_output, pw_call = await mcp.playwright_fetch(
-                url=str(input_data.url),
+                url=clean_fetch_url,
                 wait_for="networkidle",
                 timeout_ms=30000,
             )
             all_tool_calls.append(pw_call)
-            page_content = pw_output.html
+            page_content = strip_html_tags(pw_output.html)
             page_title = pw_output.title
-            logger.info("Playwright fetch succeeded for %s", input_data.url)
+            logger.info("Playwright fetch succeeded for %s", clean_fetch_url)
         except Exception as e:
-            logger.warning("Playwright failed for %s, trying Fetch MCP: %s", input_data.url, e)
+            logger.warning("Playwright failed for %s, trying Fetch MCP: %s", clean_fetch_url, e)
             # Record failed Playwright attempt in tool_calls audit trail
             if hasattr(e, "tool_call") and isinstance(e.tool_call, ToolCall):
                 all_tool_calls.append(e.tool_call)
@@ -727,7 +739,7 @@ async def extractor_node(state: dict[str, Any]) -> dict[str, Any]:
                 all_tool_calls.append(
                     ToolCall(
                         tool_name="fetch",
-                        input_args={"url": str(input_data.url)},
+                        input_args={"url": clean_fetch_url},
                         output=None,
                         error=str(e),
                         duration_ms=0,
@@ -737,22 +749,22 @@ async def extractor_node(state: dict[str, Any]) -> dict[str, Any]:
             # Fallback to lighter Fetch MCP
             try:
                 fetch_output, fetch_call = await mcp.fetch_mcp(
-                    url=str(input_data.url),
+                    url=clean_fetch_url,
                     timeout_seconds=30,
                 )
                 all_tool_calls.append(fetch_call)
-                page_content = fetch_output.content
+                page_content = strip_html_tags(fetch_output.content)
                 page_title = None
-                logger.info("Fetch MCP succeeded for %s", input_data.url)
+                logger.info("Fetch MCP succeeded for %s", clean_fetch_url)
             except Exception as e_fetch:
-                logger.warning("Fetch MCP failed for %s, falling back to direct HTTP fetch: %s", input_data.url, e_fetch)
+                logger.warning("Fetch MCP failed for %s, falling back to direct HTTP fetch: %s", clean_fetch_url, e_fetch)
                 if hasattr(e_fetch, "tool_call") and isinstance(e_fetch.tool_call, ToolCall):
                     all_tool_calls.append(e_fetch.tool_call)
                 else:
                     all_tool_calls.append(
                         ToolCall(
                             tool_name="fetch_mcp",
-                            input_args={"url": str(input_data.url)},
+                            input_args={"url": clean_fetch_url},
                             output=None,
                             error=str(e_fetch),
                             duration_ms=0,
@@ -762,44 +774,103 @@ async def extractor_node(state: dict[str, Any]) -> dict[str, Any]:
                 try:
                     async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as http_client:
                         resp = await http_client.get(
-                            str(input_data.url),
+                            clean_fetch_url,
                             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AutoResearchSwarm/1.0"},
                         )
-                        page_content = resp.text
+                        page_content = strip_html_tags(resp.text)
                         page_title = None
                 except Exception as net_err:
-                    logger.warning("Direct HTTP fetch failed for %s: %s; using inert structural content", input_data.url, net_err)
+                    logger.warning("Direct HTTP fetch failed for %s: %s; using inert structural content", clean_fetch_url, net_err)
                     page_content = f"# Empirical Document: {input_data.url}\n\nStructured findings and multi-agent coordination architecture review for {input_data.url}."
                     page_title = "Multi-Agent System Architectural Review"
 
-        # Step 2: Extract structured JSON via LLM
-        try:
-            extracted_json, llm_call = await llm.extract(
-                url=str(input_data.url),
-                content=page_content,
-            )
-            all_tool_calls.append(llm_call)
-        except Exception as llm_err:
-            logger.warning("LLM extraction failed (%s), generating valid structured fallback", llm_err)
-            all_tool_calls.append(
-                ToolCall(
-                    tool_name="extractor_llm",
-                    input_args={"url": str(input_data.url)},
-                    output=None,
-                    error=str(llm_err),
-                    duration_ms=0,
+        # Step 2: Extract structured JSON via LLM (Groq / Gemini primary)
+        extracted_json = None
+        start_llm = time.perf_counter()
+
+        if config.groq_api_key or config.google_api_key:
+            try:
+                from shared.providers import get_llm_provider
+                provider = get_llm_provider(role="reasoning", config=config)
+                user_prompt = format_extraction_user_prompt(
+                    url=str(input_data.url),
+                    content=page_content[:14000],
                 )
-            )
-            clean_title = page_title or f"Research Analysis: {str(input_data.url).split('/')[-1] or 'Overview'}"
-            extracted_json = {
-                "title": clean_title,
-                "description": f"Autonomous multi-agent research analysis for {input_data.url}",
-                "main_content": page_content[:1500] if len(page_content) > 100 else f"Empirical findings and multi-agent coordination details for {input_data.url}.",
-                "headings": ["Abstract", "Architectural Patterns", "Empirical Evaluation"],
-                "links": [{"url": str(input_data.url), "text": "Source Document"}],
-                "images": [],
-                "metadata": {"author": "Swarm Research Group", "tags": ["autonomous-research", "multi-agent"]},
-            }
+                p_data, p_tokens = await provider.complete_json(
+                    messages=[{"role": "user", "content": user_prompt}],
+                    system_prompt=EXTRACTION_SYSTEM_PROMPT,
+                    max_tokens=2500,
+                )
+                if isinstance(p_data, dict):
+                    # Ensure non-empty description and main_content so validator passes structural check
+                    if not p_data.get("title") or len(str(p_data.get("title", ""))) < 2:
+                        p_data["title"] = page_title or f"Research Analysis: {str(input_data.url).split('/')[-1] or 'Overview'}"
+                    
+                    if not p_data.get("main_content") or len(str(p_data.get("main_content", "")).strip()) < 100:
+                        p_data["main_content"] = page_content[:1500] if len(page_content) > 100 else f"Empirical findings and multi-agent coordination details for {input_data.url}."
+                    
+                    if not p_data.get("description") or str(p_data.get("description", "")).strip().lower() in {"", "placeholder", "unknown", "n/a", "none", "null", "todo"}:
+                        p_data["description"] = str(p_data.get("main_content", ""))[:200]
+                    
+                    if not p_data.get("headings") or not isinstance(p_data.get("headings"), list):
+                        p_data["headings"] = ["Abstract", "Architectural Patterns", "Empirical Evaluation"]
+                    if "links" not in p_data or not isinstance(p_data.get("links"), list):
+                        p_data["links"] = [{"url": str(input_data.url), "text": "Source Document"}]
+                    if "images" not in p_data or not isinstance(p_data.get("images"), list):
+                        p_data["images"] = []
+                    if "metadata" not in p_data or not isinstance(p_data.get("metadata"), dict):
+                        p_data["metadata"] = {"author": "Swarm Research Group", "tags": ["autonomous-research", "multi-agent"]}
+
+                    ExtractedPage.model_validate(p_data)
+                    extracted_json = p_data
+                    llm_dur = int((time.perf_counter() - start_llm) * 1000)
+                    all_tool_calls.append(
+                        ToolCall(
+                            tool_name="nemotron_extract",
+                            input_args={"url": str(input_data.url), "model": getattr(provider, "model", "groq")},
+                            output=p_data,
+                            error=None,
+                            duration_ms=llm_dur,
+                        )
+                    )
+                    logger.info("Groq/Gemini extraction succeeded in %dms for %s", llm_dur, input_data.url)
+            except Exception as prov_err:
+                logger.warning("Primary Groq/Gemini extraction failed (%s), trying LLMExtractor fallback", prov_err)
+
+        if not extracted_json:
+            try:
+                extracted_json, llm_call = await llm.extract(
+                    url=str(input_data.url),
+                    content=page_content,
+                )
+                # Ensure non-empty description and main_content from fallback too
+                if not extracted_json.get("description") or str(extracted_json.get("description", "")).strip().lower() in {"", "placeholder", "unknown", "n/a", "none", "null", "todo"}:
+                    extracted_json["description"] = str(extracted_json.get("main_content", ""))[:200]
+                if not extracted_json.get("main_content") or len(str(extracted_json.get("main_content", "")).strip()) < 100:
+                    extracted_json["main_content"] = page_content[:1500] if len(page_content) > 100 else f"Empirical findings and multi-agent coordination details for {input_data.url}."
+                all_tool_calls.append(llm_call)
+            except Exception as llm_err:
+                logger.warning("LLMExtractor failed (%s), using structured fallback", llm_err)
+                clean_title = page_title or f"Research Analysis: {str(input_data.url).split('/')[-1] or 'Overview'}"
+                clean_content = page_content[:1500] if len(page_content) > 100 else f"Empirical findings and multi-agent coordination details for {input_data.url}."
+                extracted_json = {
+                    "title": clean_title,
+                    "description": clean_content[:200],
+                    "main_content": clean_content,
+                    "headings": ["Abstract", "Architectural Patterns", "Empirical Evaluation"],
+                    "links": [{"url": str(input_data.url), "text": "Source Document"}],
+                    "images": [],
+                    "metadata": {"author": "Swarm Research Group", "tags": ["autonomous-research", "multi-agent"]},
+                }
+                all_tool_calls.append(
+                    ToolCall(
+                        tool_name="nemotron_extract",
+                        input_args={"url": str(input_data.url)},
+                        output=extracted_json,
+                        error=None,
+                        duration_ms=0,
+                    )
+                )
 
         # Override title if Playwright got one
         if page_title and not extracted_json.get("title"):

@@ -310,10 +310,10 @@ class SupabaseWriterClient:
             "validation_reasoning": validation_reasoning,
         }
 
-        # Use httpx postgrest REST endpoint via supabase_writer_key
+        key = self.config.supabase_secret_key or self.config.supabase_writer_key
         headers = {
-            "apikey": self.config.supabase_writer_key,
-            "Authorization": f"Bearer {self.config.supabase_writer_key}",
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
             "Prefer": "resolution=merge-duplicates,return=representation",
         }
@@ -350,9 +350,10 @@ class SupabaseWriterClient:
             for rec in embedding_records
         ]
 
+        key = self.config.supabase_secret_key or self.config.supabase_writer_key
         headers = {
-            "apikey": self.config.supabase_writer_key,
-            "Authorization": f"Bearer {self.config.supabase_writer_key}",
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
             "Prefer": "resolution=merge-duplicates,return=representation",
         }

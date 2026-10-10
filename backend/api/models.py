@@ -43,6 +43,9 @@ class RunResponse(APIModel):
     tokens_used: int = 0
     wall_clock_seconds: float = 0.0
     error_message: Optional[str] = None
+    max_pages: int = 20
+    max_tokens: int = 500000
+    max_tool_calls: int = 200
 
 
 class RunSummaryResponse(APIModel):

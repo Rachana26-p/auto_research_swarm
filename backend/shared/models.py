@@ -484,6 +484,8 @@ class EmbeddingRecord(BaseSchema):
 class AppConfig(BaseSchema):
     """Validated application configuration from environment."""
     supabase_url: str
+    supabase_secret_key: str = ""
+    supabase_publishable_key: str = ""
     supabase_planner_key: str
     supabase_discovery_key: str
     supabase_extractor_key: str
@@ -542,6 +544,8 @@ def load_config() -> AppConfig:
     )
     return AppConfig(
         supabase_url=os.getenv("SUPABASE_URL", ""),
+        supabase_secret_key=os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "",
+        supabase_publishable_key=os.getenv("SUPABASE_PUBLISHABLE_KEY") or "",
         supabase_planner_key=os.getenv("SUPABASE_PLANNER_KEY") or default_key,
         supabase_discovery_key=os.getenv("SUPABASE_DISCOVERY_KEY") or default_key,
         supabase_extractor_key=os.getenv("SUPABASE_EXTRACTOR_KEY") or default_key,

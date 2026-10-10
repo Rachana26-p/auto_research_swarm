@@ -112,6 +112,10 @@ class SupervisorInterrupt(Exception):
         self.reason = reason
         self.state = state
 
+    @property
+    def state_snapshot(self) -> dict[str, Any]:
+        return self.state
+
 
 class BudgetExceeded(Exception):
     """Raised when hard budget limit is exceeded (hard stop, not a warning)."""
@@ -270,9 +274,10 @@ async def _checkpoint_to_supabase(
         "error_message": entry.error_message,
         "created_at": entry.created_at.isoformat(),
     }
+    key = config.supabase_secret_key or config.supabase_planner_key
     headers = {
-        "apikey": config.supabase_planner_key,
-        "Authorization": f"Bearer {config.supabase_planner_key}",
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
     }
     try:
@@ -286,6 +291,50 @@ async def _checkpoint_to_supabase(
                 logger.warning("agent_logs HTTP %d: %s", resp.status_code, resp.text[:200])
     except Exception as exc:
         logger.warning("Checkpoint to agent_logs failed (non-fatal): %s", exc)
+
+
+async def _upsert_page_to_supabase(
+    config: AppConfig,
+    run_id: UUID,
+    page_id: UUID,
+    url: str,
+    extracted_json: dict[str, Any] | None = None,
+    markdown_path: str | None = None,
+    validation_status: str = "pending",
+    validation_reasoning: str | None = None,
+) -> None:
+    """Upserts page state to Supabase pages table for live tracking."""
+    safe_extracted = _sanitize_for_json(extracted_json) if extracted_json else None
+    key = config.supabase_secret_key or config.supabase_writer_key
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates",
+    }
+    payload = {
+        "id": str(page_id),
+        "run_id": str(run_id),
+        "url": str(url),
+        "extracted_json": safe_extracted,
+        "markdown_path": markdown_path,
+        "validation_status": validation_status.lower(),
+        "validation_reasoning": validation_reasoning,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                f"{config.supabase_url}/rest/v1/pages",
+                json=payload,
+                headers=headers,
+            )
+            if resp.status_code in (200, 201):
+                logger.info("Upserted page %s to Supabase pages table", url)
+            else:
+                logger.warning("Supabase pages upsert HTTP %d: %s", resp.status_code, resp.text[:200])
+    except Exception as exc:
+        logger.warning("Failed to upsert page to Supabase (non-fatal): %s", exc)
 
 
 def _route_validator_output(val_dict: dict[str, Any]) -> str:
@@ -362,9 +411,14 @@ class SupervisorOrchestrator:
     async def _do_checkpoint(self, **kwargs: Any) -> None:
         self.checkpoint_history.append(kwargs)
         if self._checkpoint_fn is not None:
-            await self._checkpoint_fn(**kwargs)
-        else:
+            try:
+                await self._checkpoint_fn(**kwargs)
+            except Exception as exc:
+                logger.warning("Checkpoint callback error (non-fatal): %s", exc)
+        try:
             await _checkpoint_to_supabase(**kwargs)
+        except Exception as exc:
+            logger.warning("Checkpoint to Supabase agent_logs failed (non-fatal): %s", exc)
 
     async def _run_node(
         self,
@@ -445,7 +499,14 @@ class SupervisorOrchestrator:
         if tokens:
             budget.record_tokens(int(tokens))
 
-        merged = {**state, **result}
+        merged = {
+            **state,
+            **result,
+            "pages_processed": budget.pages_processed,
+            "tool_calls_made": budget.tool_calls_made,
+            "tokens_used": budget.tokens_used,
+            "wall_clock_seconds": round(budget.elapsed_seconds(), 2),
+        }
         await self._do_checkpoint(
             config=config,
             run_id=run_id,
@@ -680,6 +741,17 @@ class SupervisorOrchestrator:
                 val_dict = validator_output.model_dump(mode="json")
                 route = _route_validator_output(val_dict)
 
+                # Upsert page verification status to Supabase pages table
+                await _upsert_page_to_supabase(
+                    config=config,
+                    run_id=run_id,
+                    page_id=page_id,
+                    url=url,
+                    extracted_json=ep.model_dump(),
+                    validation_status=val_dict.get("verdict", "uncertain"),
+                    validation_reasoning=val_dict.get("faithfulness_notes"),
+                )
+
                 # Conditional Edge: UNCERTAIN -> interrupt()
                 if route == "interrupt":
                     summary["pages_uncertain"].append({
@@ -732,6 +804,17 @@ class SupervisorOrchestrator:
                         "page_id": str(page_id),
                         "markdown_path": writer_output.markdown_path,
                     })
+                    # Update page in Supabase with markdown path
+                    await _upsert_page_to_supabase(
+                        config=config,
+                        run_id=run_id,
+                        page_id=page_id,
+                        url=url,
+                        extracted_json=ep.model_dump(),
+                        markdown_path=writer_output.markdown_path,
+                        validation_status="passed",
+                        validation_reasoning="Passed and persisted to knowledge base",
+                    )
                 except RuntimeError as exc:
                     summary["errors"].append({"url": url, "stage": "writer", "error": str(exc)})
                     summary["pages_failed"] += 1
