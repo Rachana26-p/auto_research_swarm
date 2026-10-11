@@ -148,12 +148,25 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   });
 
   if (!res.ok) {
-    let errorDetail = res.statusText;
+    let errorDetail = res.statusText || `HTTP ${res.status}`;
     try {
       const errJson = await res.json();
-      errorDetail = errJson.detail || errJson.error || JSON.stringify(errJson);
+      const raw = errJson?.detail ?? errJson?.error ?? errJson?.message ?? errJson;
+      if (typeof raw === "string") {
+        errorDetail = raw;
+      } else if (raw && typeof raw === "object") {
+        errorDetail = (raw as Record<string, unknown>).message as string || JSON.stringify(raw);
+      } else {
+        errorDetail = JSON.stringify(errJson);
+      }
     } catch {
-      // not json
+      // not json, attempt text extraction
+      try {
+        const text = await res.text();
+        if (text) errorDetail = text;
+      } catch {
+        // keep fallback
+      }
     }
     throw new Error(`API Error (${res.status}): ${errorDetail}`);
   }

@@ -8,26 +8,29 @@ function getApiKey(): string {
   return process.env.BACKEND_API_KEY || process.env.API_KEY || "test-api-key";
 }
 
-function buildBackendUrl(path: string[], search: string): string {
-  const base = getBackendBaseUrl();
+function buildBackendUrl(path: string[] | undefined, search: string): string {
+  let base = getBackendBaseUrl().trim();
+  if (!base.startsWith("http://") && !base.startsWith("https://")) {
+    base = `https://${base}`;
+  }
   const normalizedBase = base.endsWith("/") ? base : `${base}/`;
-  const relativePath = path.join("/").replace(/^\//, "");
-  return new URL(`${relativePath}${search}`, normalizedBase).toString();
+  const relativePath = Array.isArray(path) ? path.join("/").replace(/^\//, "") : "";
+  return new URL(`${relativePath}${search || ""}`, normalizedBase).toString();
 }
 
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ) {
-  const { path } = await params;
-  const search = request.nextUrl.search;
-  const targetUrl = buildBackendUrl(path, search);
-
-  const headers = new Headers();
-  headers.set("X-API-Key", getApiKey());
-  headers.set("Accept", request.headers.get("Accept") || "application/json");
-
   try {
+    const { path } = await params;
+    const search = request.nextUrl.search;
+    const targetUrl = buildBackendUrl(path, search);
+
+    const headers = new Headers();
+    headers.set("X-API-Key", getApiKey());
+    headers.set("Accept", request.headers.get("Accept") || "application/json");
+
     const backendResp = await fetch(targetUrl, {
       method: "GET",
       headers,
@@ -63,16 +66,16 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ) {
-  const { path } = await params;
-  const search = request.nextUrl.search;
-  const targetUrl = buildBackendUrl(path, search);
-
-  const bodyText = await request.text();
-  const headers = new Headers();
-  headers.set("X-API-Key", getApiKey());
-  headers.set("Content-Type", "application/json");
-
   try {
+    const { path } = await params;
+    const search = request.nextUrl.search;
+    const targetUrl = buildBackendUrl(path, search);
+
+    const bodyText = await request.text();
+    const headers = new Headers();
+    headers.set("X-API-Key", getApiKey());
+    headers.set("Content-Type", "application/json");
+
     const backendResp = await fetch(targetUrl, {
       method: "POST",
       headers,
@@ -110,16 +113,16 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ) {
-  const { path } = await params;
-  const search = request.nextUrl.search;
-  const targetUrl = buildBackendUrl(path, search);
-
-  const bodyText = await request.text();
-  const headers = new Headers();
-  headers.set("X-API-Key", getApiKey());
-  headers.set("Content-Type", "application/json");
-
   try {
+    const { path } = await params;
+    const search = request.nextUrl.search;
+    const targetUrl = buildBackendUrl(path, search);
+
+    const bodyText = await request.text();
+    const headers = new Headers();
+    headers.set("X-API-Key", getApiKey());
+    headers.set("Content-Type", "application/json");
+
     const backendResp = await fetch(targetUrl, {
       method: "PATCH",
       headers,
@@ -144,16 +147,16 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ) {
-  const { path } = await params;
-  const search = request.nextUrl.search;
-  const targetUrl = buildBackendUrl(path, search);
-
-  const bodyText = await request.text();
-  const headers = new Headers();
-  headers.set("X-API-Key", getApiKey());
-  headers.set("Content-Type", "application/json");
-
   try {
+    const { path } = await params;
+    const search = request.nextUrl.search;
+    const targetUrl = buildBackendUrl(path, search);
+
+    const bodyText = await request.text();
+    const headers = new Headers();
+    headers.set("X-API-Key", getApiKey());
+    headers.set("Content-Type", "application/json");
+
     const backendResp = await fetch(targetUrl, {
       method: "PUT",
       headers,
@@ -178,14 +181,14 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ) {
-  const { path } = await params;
-  const search = request.nextUrl.search;
-  const targetUrl = buildBackendUrl(path, search);
-
-  const headers = new Headers();
-  headers.set("X-API-Key", getApiKey());
-
   try {
+    const { path } = await params;
+    const search = request.nextUrl.search;
+    const targetUrl = buildBackendUrl(path, search);
+
+    const headers = new Headers();
+    headers.set("X-API-Key", getApiKey());
+
     const backendResp = await fetch(targetUrl, {
       method: "DELETE",
       headers,
