@@ -252,8 +252,8 @@ class RunManager:
             self.reviews.pop(k, None)
         # Clean isolated folder from disk
         try:
-            cfg = record.config or get_config()
-            k_dir = Path(cfg.knowledge_dir or "./knowledge") / str(run_id)
+            cfg = (record.config if record else None) or get_config()
+            k_dir = Path(getattr(cfg, "knowledge_dir", None) or "./knowledge") / str(run_id)
             if k_dir.exists():
                 shutil.rmtree(k_dir, ignore_errors=True)
         except Exception as exc:
@@ -271,7 +271,11 @@ class RunManager:
         user_id: str | None = None,
     ) -> RunRecord:
         rid = run_id or uuid4()
-        cfg = config or get_config()
+        try:
+            cfg = config or get_config()
+        except Exception as exc:
+            logger.warning("Could not load config in start_run, using fallback: %s", exc)
+            cfg = config or AppConfig()
         b_cfg = budget_config or BudgetConfig()
 
         record = RunRecord(

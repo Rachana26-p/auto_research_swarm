@@ -493,14 +493,14 @@ class EmbeddingRecord(BaseSchema):
 
 class AppConfig(BaseSchema):
     """Validated application configuration from environment."""
-    supabase_url: str
+    supabase_url: str = "https://placeholder-project.supabase.co"
     supabase_secret_key: str = ""
     supabase_publishable_key: str = ""
-    supabase_planner_key: str
-    supabase_discovery_key: str
-    supabase_extractor_key: str
-    supabase_validator_key: str
-    supabase_writer_key: str
+    supabase_planner_key: str = "placeholder-key"
+    supabase_discovery_key: str = "placeholder-key"
+    supabase_extractor_key: str = "placeholder-key"
+    supabase_validator_key: str = "placeholder-key"
+    supabase_writer_key: str = "placeholder-key"
     tavily_api_key: str = ""
     groq_api_key: str = ""
     groq_model: str = ""
@@ -556,11 +556,11 @@ def load_config() -> AppConfig:
         supabase_url=os.getenv("SUPABASE_URL", ""),
         supabase_secret_key=os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "",
         supabase_publishable_key=os.getenv("SUPABASE_PUBLISHABLE_KEY") or "",
-        supabase_planner_key=os.getenv("SUPABASE_PLANNER_KEY") or default_key,
-        supabase_discovery_key=os.getenv("SUPABASE_DISCOVERY_KEY") or default_key,
-        supabase_extractor_key=os.getenv("SUPABASE_EXTRACTOR_KEY") or default_key,
-        supabase_validator_key=os.getenv("SUPABASE_VALIDATOR_KEY") or default_key,
-        supabase_writer_key=os.getenv("SUPABASE_WRITER_KEY") or default_key,
+        supabase_planner_key=os.getenv("SUPABASE_PLANNER_KEY") or default_key or "placeholder-key",
+        supabase_discovery_key=os.getenv("SUPABASE_DISCOVERY_KEY") or default_key or "placeholder-key",
+        supabase_extractor_key=os.getenv("SUPABASE_EXTRACTOR_KEY") or default_key or "placeholder-key",
+        supabase_validator_key=os.getenv("SUPABASE_VALIDATOR_KEY") or default_key or "placeholder-key",
+        supabase_writer_key=os.getenv("SUPABASE_WRITER_KEY") or default_key or "placeholder-key",
         tavily_api_key=os.getenv("TAVILY_API_KEY", ""),
         groq_api_key=os.getenv("GROQ_API_KEY", ""),
         groq_model=os.getenv("GROQ_MODEL", ""),
