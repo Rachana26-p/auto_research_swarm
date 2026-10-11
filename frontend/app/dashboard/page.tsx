@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AlertBanner, Button, ConfirmationModal, CopyButton, PencilIcon, StatusDot, TrashIcon } from "@/components";
 import { createRun, deleteRun, getRuns, RunSummaryResponse, updateRun } from "@/lib/api";
+import { supabase } from "@/lib/supabase";
 
 const SUGGESTIONS = [
   "Test-time compute scaling and dynamic search architectures in frontier LLMs",
@@ -40,6 +41,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isMounted, setIsMounted] = useState(false);
+  const [userId, setUserId] = useState<string | null>(null);
 
   // Rename inline state
   const [editingRunId, setEditingRunId] = useState<string | null>(null);
@@ -49,11 +51,26 @@ export default function DashboardPage() {
   const [deleteTargetRunId, setDeleteTargetRunId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
+  // Track auth session to isolate user runs
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUserId(session?.user?.id || null);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUserId(session?.user?.id || null);
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
   const fetchRunsList = async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await getRuns();
+      const data = await getRuns(userId || undefined);
       setRuns(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load runs");
@@ -74,7 +91,7 @@ export default function DashboardPage() {
 
     const poll = async (isInitial = false) => {
       try {
-        const data = await getRuns();
+        const data = await getRuns(userId || undefined);
         if (active) {
           setRuns(data);
           setError(null);
@@ -102,7 +119,7 @@ export default function DashboardPage() {
       active = false;
       clearInterval(timer);
     };
-  }, []);
+  }, [userId]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -133,6 +150,7 @@ export default function DashboardPage() {
         max_tool_calls: dynamicBudget,
         provider: modelProvider,
         model: modelName,
+        user_id: userId || undefined,
       });
 
       // Clear the console input so it refreshes cleanly

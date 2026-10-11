@@ -12,6 +12,7 @@ import {
   ReviewResponse,
   RunSummaryResponse,
 } from "@/lib/api";
+import { supabase } from "@/lib/supabase";
 
 function ReviewsContent() {
   const searchParams = useSearchParams();
@@ -29,11 +30,13 @@ function ReviewsContent() {
   // Reject confirmation modal
   const [rejectTargetId, setRejectTargetId] = useState<string | null>(null);
 
-  // Fetch runs list for the run selector dropdown
+  // Fetch runs list isolated to this authenticated user
   useEffect(() => {
-    getRuns()
-      .then((data) => setRuns(data))
-      .catch(() => {});
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      getRuns(session?.user?.id || undefined)
+        .then((data) => setRuns(data))
+        .catch(() => {});
+    });
   }, []);
 
   const fetchReviews = async () => {

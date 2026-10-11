@@ -29,6 +29,7 @@ class RunCreateRequest(APIModel):
     max_wall_seconds: float = Field(default=1800.0, ge=10.0, le=7200.0)
     provider: Optional[str] = Field(default="gemini", description="LLM provider: gemini or groq")
     model: Optional[str] = Field(default="gemini-1.5-flash", description="Model name")
+    user_id: Optional[str] = Field(default=None, description="Isolated user identity ID")
 
 
 class RunUpdateRequest(APIModel):
@@ -54,6 +55,7 @@ class RunResponse(APIModel):
     max_tool_calls: int = 200
     provider: Optional[str] = "gemini"
     model: Optional[str] = "gemini-1.5-flash"
+    user_id: Optional[str] = None
 
 
 class RunSummaryResponse(APIModel):
@@ -63,6 +65,7 @@ class RunSummaryResponse(APIModel):
     created_at: datetime
     pages_persisted: int = 0
     tokens_used: int = 0
+    user_id: Optional[str] = None
 
 
 # ============================================================

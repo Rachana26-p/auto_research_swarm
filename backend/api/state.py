@@ -26,7 +26,13 @@ from shared.models import AppConfig
 logger = logging.getLogger(__name__)
 
 
-async def _persist_run_to_supabase(cfg: AppConfig, run_id: UUID, goal: str, status: str = "running") -> None:
+async def _persist_run_to_supabase(
+    cfg: AppConfig,
+    run_id: UUID,
+    goal: str,
+    status: str = "running",
+    user_id: str | None = None,
+) -> None:
     """Inserts a run record to Supabase runs table so foreign keys in other tables succeed."""
     try:
         key = cfg.supabase_secret_key or cfg.supabase_planner_key
@@ -36,14 +42,17 @@ async def _persist_run_to_supabase(cfg: AppConfig, run_id: UUID, goal: str, stat
             "Content-Type": "application/json",
             "Prefer": "resolution=merge-duplicates",
         }
+        payload: dict[str, Any] = {
+            "id": str(run_id),
+            "goal": goal,
+            "status": status,
+        }
+        if user_id:
+            payload["user_id"] = user_id
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(
                 f"{cfg.supabase_url}/rest/v1/runs",
-                json={
-                    "id": str(run_id),
-                    "goal": goal,
-                    "status": status,
-                },
+                json=payload,
                 headers=headers,
             )
             if resp.status_code in (200, 201):
@@ -101,6 +110,7 @@ class RunRecord:
         config: AppConfig,
         provider: str | None = None,
         model: str | None = None,
+        user_id: str | None = None,
     ):
         self.run_id = run_id
         self.goal = goal
@@ -108,6 +118,7 @@ class RunRecord:
         self.config = config
         self.provider: str = provider or "gemini"
         self.model: str = model or "gemini-1.5-flash"
+        self.user_id: Optional[str] = user_id
         self.status: str = "pending"  # pending, running, completed, interrupted, failed
         self.created_at: datetime = datetime.now(timezone.utc)
         self.completed_at: Optional[datetime] = None
@@ -117,6 +128,7 @@ class RunRecord:
             "status": "pending",
             "provider": self.provider,
             "model": self.model,
+            "user_id": self.user_id,
             "pages_processed": 0,
             "pages_persisted": 0,
             "pages_uncertain": [],
@@ -133,6 +145,7 @@ class RunRecord:
                 "timestamp": self.created_at.isoformat(),
                 "status": "pending",
                 "goal": goal,
+                "user_id": self.user_id,
             }
         ]
         self._subscribers: list[asyncio.Queue] = []
@@ -197,8 +210,12 @@ class RunManager:
     def get_run(self, run_id: UUID) -> Optional[RunRecord]:
         return self.runs.get(run_id)
 
-    def list_runs(self) -> list[RunRecord]:
-        return sorted(self.runs.values(), key=lambda r: r.created_at, reverse=True)
+    def list_runs(self, user_id: str | None = None) -> list[RunRecord]:
+        all_runs = sorted(self.runs.values(), key=lambda r: r.created_at, reverse=True)
+        if user_id:
+            return [r for r in all_runs if r.user_id == user_id]
+        # Strict user isolation: never leak an authenticated user's runs to unauthenticated callers
+        return [r for r in all_runs if not r.user_id]
 
     def get_review(self, review_id: UUID) -> Optional[ReviewRecord]:
         return self.reviews.get(review_id)
@@ -250,6 +267,7 @@ class RunManager:
         run_id: UUID | None = None,
         provider: str | None = None,
         model: str | None = None,
+        user_id: str | None = None,
     ) -> RunRecord:
         rid = run_id or uuid4()
         cfg = config or get_config()
@@ -262,6 +280,7 @@ class RunManager:
             config=cfg,
             provider=provider,
             model=model,
+            user_id=user_id,
         )
         self.runs[rid] = record
 
@@ -356,7 +375,7 @@ class RunManager:
         record.orchestrator = orchestrator
 
         # Persist run row to Supabase runs table immediately so foreign keys succeed
-        await _persist_run_to_supabase(cfg, rid, goal, "running")
+        await _persist_run_to_supabase(cfg, rid, goal, "running", user_id=user_id)
 
         # Launch background task
         task = asyncio.create_task(self._run_supervisor_loop(record, orchestrator))

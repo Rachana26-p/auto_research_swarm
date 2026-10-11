@@ -11,6 +11,7 @@ export interface RunCreateRequest {
   max_wall_seconds?: number;
   provider?: "gemini" | "groq";
   model?: string;
+  user_id?: string;
 }
 
 export type RunStatus = "pending" | "running" | "completed" | "interrupted" | "failed";
@@ -35,6 +36,7 @@ export interface RunResponse {
   max_wall_seconds?: number;
   provider?: string;
   model?: string;
+  user_id?: string;
 }
 
 export interface RunSummaryResponse {
@@ -44,6 +46,7 @@ export interface RunSummaryResponse {
   created_at: string;
   pages_persisted: number;
   tokens_used: number;
+  user_id?: string;
 }
 
 export interface ReviewResponse {
@@ -166,8 +169,9 @@ export async function createRun(data: RunCreateRequest): Promise<RunResponse> {
   });
 }
 
-export async function getRuns(): Promise<RunSummaryResponse[]> {
-  return request<RunSummaryResponse[]>("/runs", {
+export async function getRuns(userId?: string): Promise<RunSummaryResponse[]> {
+  const qs = userId ? `?user_id=${encodeURIComponent(userId)}` : "";
+  return request<RunSummaryResponse[]>(`/runs${qs}`, {
     method: "GET",
   });
 }

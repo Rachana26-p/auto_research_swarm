@@ -46,6 +46,7 @@ def _to_run_response(record: RunRecord) -> RunResponse:
         max_tool_calls=computed_tool_calls,
         provider=record.provider,
         model=record.model,
+        user_id=record.user_id,
     )
 
 
@@ -58,7 +59,7 @@ def _to_run_response(record: RunRecord) -> RunResponse:
 async def create_run(req: RunCreateRequest) -> RunResponse:
     """
     Launch a new research run with dynamic budget limits as a background task.
-    Enforces goal length limits and rate limits.
+    Enforces goal length limits, user isolation, and rate limits.
     """
     calc_tool_calls = req.max_tool_calls or calculate_dynamic_tool_budget(req.max_pages, req.max_tokens)
     b_cfg = BudgetConfig(
@@ -72,14 +73,15 @@ async def create_run(req: RunCreateRequest) -> RunResponse:
         budget_config=b_cfg,
         provider=req.provider,
         model=req.model,
+        user_id=req.user_id,
     )
     return _to_run_response(record)
 
 
 @router.get("", response_model=list[RunSummaryResponse])
-async def list_runs() -> list[RunSummaryResponse]:
-    """List all research runs and their status."""
-    runs = run_manager.list_runs()
+async def list_runs(user_id: str | None = None) -> list[RunSummaryResponse]:
+    """List research runs isolated strictly to the requesting user."""
+    runs = run_manager.list_runs(user_id=user_id)
     return [
         RunSummaryResponse(
             id=r.run_id,
@@ -88,6 +90,7 @@ async def list_runs() -> list[RunSummaryResponse]:
             created_at=r.created_at,
             pages_persisted=r.summary.get("pages_persisted", 0),
             tokens_used=r.summary.get("tokens_used", 0),
+            user_id=r.user_id,
         )
         for r in runs
     ]

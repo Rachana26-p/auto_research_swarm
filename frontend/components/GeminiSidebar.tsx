@@ -69,7 +69,7 @@ export function GeminiSidebar() {
     let active = true;
     (async () => {
       try {
-        const rList = await getRuns();
+        const rList = await getRuns(user?.id);
         if (active) setRuns(rList);
       } catch {
         // non-fatal
