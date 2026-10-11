@@ -232,6 +232,8 @@ class PlannerInput(BaseSchema):
     goal: str = Field(min_length=1)
     max_subtasks: int = Field(default=5, ge=1)
     max_domains_per_subtask: int = Field(default=3, ge=1)
+    provider: str | None = None
+    model: str | None = None
 
 
 class PlannerOutput(BaseSchema):
@@ -257,6 +259,8 @@ class DiscoveryInput(BaseSchema):
     description: str = Field(min_length=1)
     candidate_domains: list[str] = Field(default_factory=list)
     max_urls: int = Field(default=10, ge=1)
+    provider: str | None = None
+    model: str | None = None
 
 
 class DiscoveryOutput(BaseSchema):
@@ -273,6 +277,8 @@ class ExtractorInput(BaseSchema):
     url: str
     run_id: UUID
     page_id: UUID
+    provider: str | None = None
+    model: str | None = None
 
 
 class ExtractorOutput(BaseSchema):
@@ -305,6 +311,8 @@ class ValidatorInput(BaseSchema):
     extracted_content: ExtractedPage
     source_content: str  # Raw fetched content for faithfulness check
     subtask_description: str = Field(default="", description="Subtask description for relevance checking")
+    provider: str | None = None
+    model: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -351,6 +359,8 @@ class WriterInput(BaseSchema):
     source_url: str = Field(min_length=1)
     extracted_content: ExtractedPage
     validation_result: ValidatorOutput  # must be verdict == PASS
+    provider: str | None = None
+    model: str | None = None
 
 
 class WriterOutput(BaseSchema):

@@ -9,6 +9,8 @@ export interface RunCreateRequest {
   max_tool_calls?: number;
   max_tokens?: number;
   max_wall_seconds?: number;
+  provider?: "gemini" | "groq";
+  model?: string;
 }
 
 export type RunStatus = "pending" | "running" | "completed" | "interrupted" | "failed";
@@ -31,6 +33,8 @@ export interface RunResponse {
   max_tokens?: number;
   max_tool_calls?: number;
   max_wall_seconds?: number;
+  provider?: string;
+  model?: string;
 }
 
 export interface RunSummaryResponse {
@@ -174,12 +178,36 @@ export async function getRun(id: string): Promise<RunResponse> {
   });
 }
 
+export async function redoRun(id: string): Promise<RunResponse> {
+  return request<RunResponse>(`/runs/${id}/redo`, {
+    method: "POST",
+  });
+}
+
+export async function updateRun(id: string, goal: string): Promise<RunResponse> {
+  return request<RunResponse>(`/runs/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ goal }),
+  });
+}
+
+export async function deleteRun(id: string): Promise<void> {
+  return request<void>(`/runs/${id}`, {
+    method: "DELETE",
+  });
+}
+
 export function getEventsStreamUrl(runId: string): string {
   return `/api/runs/${runId}/events`;
 }
 
-export async function getReviews(): Promise<ReviewResponse[]> {
-  return request<ReviewResponse[]>("/reviews", {
+export async function getReviews(runId?: string, includeResolved = true): Promise<ReviewResponse[]> {
+  const params = new URLSearchParams();
+  if (runId) params.append("run_id", runId);
+  if (includeResolved) params.append("include_resolved", "true");
+  const qs = params.toString() ? `?${params.toString()}` : "";
+  return request<ReviewResponse[]>(`/reviews${qs}`, {
     method: "GET",
   });
 }
@@ -213,4 +241,39 @@ export async function getGuardrailEvents(runId?: string): Promise<GuardrailEvent
   return request<GuardrailEventResponse[]>(`/guardrail-events${query}`, {
     method: "GET",
   });
+}
+
+export interface LatexResponse {
+  run_id: string;
+  latex_code: string;
+  status: string;
+  latex_path?: string | null;
+}
+
+export async function getRunLatex(runId: string): Promise<LatexResponse> {
+  return request<LatexResponse>(`/runs/${runId}/latex`, {
+    method: "GET",
+  });
+}
+
+export async function updateRunLatex(runId: string, latexCode: string): Promise<LatexResponse> {
+  return request<LatexResponse>(`/runs/${runId}/latex`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ latex_code: latexCode }),
+  });
+}
+
+export async function compileRunPdf(runId: string, latexCode?: string): Promise<Blob> {
+  const url = `/api/runs/${runId}/compile-pdf`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ latex_code: latexCode }),
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`PDF Compilation failed: ${errText}`);
+  }
+  return res.blob();
 }

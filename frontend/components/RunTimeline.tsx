@@ -39,13 +39,13 @@ export const RunTimeline: React.FC<RunTimelineProps> = ({
 
   return (
     <div className={`w-full py-4 ${className}`}>
-      {/* Horizontal Bauhaus Grid: Nodes as squares, connectors as thin rules */}
+      {/* Horizontal Graph: Nodes as squares, connectors as thin rules */}
       <div className="flex flex-col sm:flex-row items-center justify-between gap-4 sm:gap-0 relative">
         {renderedNodes.map((node, index) => {
           const isFirst = index === 0;
 
-          // Square border and fill styles per Bauhaus status mapping
-          let squareStyle = "bg-[#FAFAFA] border-2 border-[#0A0A0A] text-[#0A0A0A]";
+          // Square border and fill styles per status mapping
+          let squareStyle = "bg-[#FAFAFA] dark:bg-[#14161E] border-2 border-[#0A0A0A] dark:border-[#2C3142] text-[#0A0A0A] dark:text-[#EDEEF2]";
           if (node.status === "running") {
             squareStyle = "bg-[#1D3557] border-2 border-[#1D3557] text-[#FAFAFA] animate-pulse";
           } else if (node.status === "completed") {
@@ -60,12 +60,12 @@ export const RunTimeline: React.FC<RunTimelineProps> = ({
             <React.Fragment key={node.key}>
               {/* Connector line (hidden on mobile vertical stack, visible on desktop) */}
               {!isFirst && (
-                <div className="hidden sm:block flex-1 h-[2px] bg-[#0A0A0A] mx-2 transition-colors" />
+                <div className="hidden sm:block flex-1 h-[2px] bg-[#0A0A0A] dark:bg-[#2C3142] mx-2 transition-colors" />
               )}
 
               {/* Node Item */}
               <div className="flex flex-col items-center text-center z-10 w-28">
-                {/* Node Bauhaus Square */}
+                {/* Node Square */}
                 <div
                   className={`w-12 h-12 flex flex-col items-center justify-center font-['Space_Grotesk'] font-bold text-xs uppercase transition-all shadow-none ${squareStyle}`}
                   title={`${node.name}: ${node.status}`}

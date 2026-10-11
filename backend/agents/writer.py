@@ -398,8 +398,10 @@ async def writer_node(state: dict[str, Any]) -> dict[str, Any]:
     start_time = time.perf_counter()
 
     # Validate input against WriterInput schema
+    _writer_fields = {"run_id", "page_id", "source_url", "extracted_content", "validation_result", "provider", "model"}
+    writer_state = {k: v for k, v in state.items() if k in _writer_fields} if isinstance(state, dict) else state
     try:
-        input_data = WriterInput.model_validate(state)
+        input_data = WriterInput.model_validate(writer_state)
     except ValidationError as e:
         logger.error("Writer input validation failed: %s", e)
         raise ValueError(f"Invalid writer input: {e}") from e
@@ -421,7 +423,9 @@ async def writer_node(state: dict[str, Any]) -> dict[str, Any]:
 
     config = get_config()
     ensure_directories(config)
-    knowledge_dir = Path(config.knowledge_dir)
+    # Isolate all research artifacts into a dedicated directory per run/chat
+    knowledge_dir = (Path(config.knowledge_dir) / str(input_data.run_id)) if input_data.run_id else Path(config.knowledge_dir)
+    knowledge_dir.mkdir(parents=True, exist_ok=True)
 
     all_tool_calls: list[ToolCall] = []
 

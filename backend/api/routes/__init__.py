@@ -4,6 +4,7 @@ API router package.
 
 from .guardrails import router as guardrails_router
 from .knowledge import router as knowledge_router
+from .latex import router as latex_router
 from .reviews import router as reviews_router
 from .runs import router as runs_router
 
@@ -12,4 +13,5 @@ __all__ = [
     "reviews_router",
     "knowledge_router",
     "guardrails_router",
+    "latex_router",
 ]

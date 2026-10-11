@@ -3,361 +3,245 @@
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Button, StatusDot } from "@/components";
-import { createRun, getRuns, RunSummaryResponse } from "@/lib/api";
+import { supabase } from "@/lib/supabase";
 
-export default function HomePage() {
+export default function LandingPage() {
   const router = useRouter();
-
-  // Form State
-  const [goal, setGoal] = useState("");
-  const [maxPages, setMaxPages] = useState(20);
-  const [maxTokens, setMaxTokens] = useState(500000);
-  const [submitting, setSubmitting] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
-
-  // Runs List State
-  const [runs, setRuns] = useState<RunSummaryResponse[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const fetchRunsList = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await getRuns();
-      setRuns(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load runs");
-    } finally {
-      setLoading(false);
-    }
-  };
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [isMounted, setIsMounted] = useState(false);
 
   useEffect(() => {
-    let active = true;
-    (async () => {
-      try {
-        const data = await getRuns();
-        if (active) {
-          setRuns(data);
-          setError(null);
-        }
-      } catch (err) {
-        if (active) {
-          setError(err instanceof Error ? err.message : "Failed to load runs");
-        }
-      } finally {
-        if (active) {
-          setLoading(false);
-        }
+    setIsMounted(true);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user?.email) {
+        setUserEmail(session.user.email);
       }
-    })();
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUserEmail(session?.user?.email || null);
+    });
 
     return () => {
-      active = false;
+      subscription.unsubscribe();
     };
   }, []);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setFormError(null);
-
-    const trimmedGoal = goal.trim();
-    if (!trimmedGoal) {
-      setFormError("Research goal cannot be empty");
-      return;
-    }
-    if (trimmedGoal.length > 5000) {
-      setFormError("Research goal exceeds maximum length of 5000 characters");
-      return;
-    }
-
-    setSubmitting(true);
-    try {
-      const newRun = await createRun({
-        goal: trimmedGoal,
-        max_pages: Number(maxPages),
-        max_tokens: Number(maxTokens),
-      });
-      router.push(`/runs/${newRun.id}`);
-    } catch (err) {
-      setFormError(err instanceof Error ? err.message : "Failed to launch run");
-      setSubmitting(false);
-    }
-  };
-
   return (
-    <div className="space-y-12">
+    <div className="space-y-16 py-4">
+      {/* Logged In Quick Switch Banner if user has active session */}
+      {isMounted && userEmail && (
+        <div className="border-2 border-[#1D3557] bg-[#1D3557]/10 p-4 flex flex-col sm:flex-row items-center justify-between gap-3 font-mono text-xs shadow-[3px_3px_0px_0px_#1D3557]">
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 bg-[#2A9D8F] inline-block" />
+            <span className="text-[#0A0A0A]">
+              Active session identified for <strong>{userEmail}</strong>
+            </span>
+          </div>
+          <Link
+            href="/dashboard"
+            className="px-4 py-2 bg-[#1D3557] text-[#FAFAFA] font-['Space_Grotesk'] font-bold uppercase hover:bg-[#E63946] transition-colors"
+          >
+            Go to Research Console &rarr;
+          </Link>
+        </div>
+      )}
+
       {/* Hero Section */}
-      <div className="border-b-2 border-[#0A0A0A] pb-8">
-        <div className="flex items-center gap-3 mb-2">
-          <span className="w-3 h-3 bg-[#E63946] inline-block" />
-          <span className="font-mono text-xs uppercase tracking-widest text-[#0A0A0A]/60">
-            System Controller // Phase 3
-          </span>
-        </div>
-        <h1 className="font-['Archivo_Black'] text-4xl sm:text-5xl uppercase tracking-tight text-[#0A0A0A] leading-none mb-4">
-          Autonomous Research Swarm
-        </h1>
-        <p className="font-['Inter'] text-base text-[#0A0A0A]/80 max-w-2xl leading-relaxed">
-          Deterministic 5-agent state machine. Planner decomposes goals,
-          Discovery scouts domains, Extractor retrieves pure structured data,
-          Validator gates quality, and Writer synthesizes knowledge articles.
-        </p>
-      </div>
-
-      {/* Main Grid: Goal Launch Form & Status */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* Launch Form (7 cols) */}
-        <div className="lg:col-span-7 border-2 border-[#0A0A0A] bg-[#FAFAFA] p-6 sm:p-8">
-          <div className="flex items-center justify-between pb-4 border-b-2 border-[#0A0A0A] mb-6">
-            <h2 className="font-['Space_Grotesk'] font-bold text-xl uppercase tracking-tight">
-              Initialize Research Run
-            </h2>
-            <span className="font-mono text-xs uppercase text-[#E63946] font-bold">
-              [GOAL INPUT]
-            </span>
+      <section className="border-2 border-[#0A0A0A] bg-[#FAFAFA] p-8 sm:p-12 relative overflow-hidden shadow-[6px_6px_0px_0px_#0A0A0A]">
+        <div className="absolute top-0 right-0 w-32 h-32 bg-[#E63946] -mr-16 -mt-16 transform rotate-45 border-b-2 border-l-2 border-[#0A0A0A] hidden md:block" />
+        
+        <div className="max-w-4xl space-y-6">
+          <div className="inline-flex items-center gap-2 px-3 py-1 bg-[#0A0A0A] text-[#FAFAFA] font-mono text-xs uppercase tracking-widest">
+            <span className="w-2 h-2 bg-[#E63946] inline-block" />
+            <span>Autonomous Multi-Agent Swarm // Core 5.0</span>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-6">
-            {formError && (
-              <div className="p-4 bg-[#E63946]/10 border-2 border-[#E63946] text-[#E63946] font-mono text-xs">
-                <span className="font-bold">ERROR: </span>
-                {formError}
-              </div>
-            )}
+          <h1 className="font-['Archivo_Black'] text-4xl sm:text-6xl uppercase tracking-tight text-[#0A0A0A] leading-none">
+            Literature Discovery &amp; Live LaTeX Synthesis
+          </h1>
 
-            <div>
-              <div className="flex justify-between items-center mb-2">
-                <label
-                  htmlFor="goal-input"
-                  className="font-['Space_Grotesk'] font-bold text-sm uppercase tracking-wide text-[#0A0A0A]"
-                >
-                  Research Goal / Objective
-                </label>
-                <span className="font-mono text-xs text-[#0A0A0A]/50">
-                  {goal.length} / 5000
-                </span>
-              </div>
-              <textarea
-                id="goal-input"
-                value={goal}
-                onChange={(e) => setGoal(e.target.value)}
-                placeholder="e.g., Investigate recent breakthrough quantum computing error mitigation algorithms published in 2026..."
-                rows={5}
-                required
-                className="w-full border-2 border-[#0A0A0A] p-4 font-['Inter'] text-sm bg-[#FAFAFA] text-[#0A0A0A] placeholder-[#0A0A0A]/40 focus:outline-none focus:border-[#E63946] transition-colors resize-y radius-sm"
-              />
-            </div>
+          <p className="font-['Inter'] text-lg sm:text-xl text-[#0A0A0A]/80 leading-relaxed font-normal max-w-3xl">
+            Auto Research Swarm is a deterministic 5-node agentic state machine. It autonomously conducts deep academic literature reviews, enforces SSRF &amp; prompt-injection guardrails, and synthesizes publication-ready survey papers with a live Overleaf-grade LaTeX compiler.
+          </p>
 
-            {/* Budget Configuration */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
-              <div>
-                <label
-                  htmlFor="max-pages-input"
-                  className="block font-['Space_Grotesk'] font-bold text-xs uppercase text-[#0A0A0A] mb-1"
-                >
-                  Max Pages Budget
-                </label>
-                <input
-                  id="max-pages-input"
-                  type="number"
-                  min={1}
-                  max={100}
-                  value={maxPages}
-                  onChange={(e) => setMaxPages(Number(e.target.value))}
-                  className="w-full border-2 border-[#0A0A0A] p-2.5 font-mono text-sm bg-[#FAFAFA] text-[#0A0A0A] focus:outline-none focus:border-[#E63946] radius-sm"
-                />
-              </div>
-
-              <div>
-                <label
-                  htmlFor="max-tokens-input"
-                  className="block font-['Space_Grotesk'] font-bold text-xs uppercase text-[#0A0A0A] mb-1"
-                >
-                  Max Token Budget
-                </label>
-                <input
-                  id="max-tokens-input"
-                  type="number"
-                  min={1000}
-                  max={2000000}
-                  step={10000}
-                  value={maxTokens}
-                  onChange={(e) => setMaxTokens(Number(e.target.value))}
-                  className="w-full border-2 border-[#0A0A0A] p-2.5 font-mono text-sm bg-[#FAFAFA] text-[#0A0A0A] focus:outline-none focus:border-[#E63946] radius-sm"
-                />
-              </div>
-            </div>
-
-            <Button
-              type="submit"
-              variant="primary"
-              size="lg"
-              loading={submitting}
-              className="w-full mt-4"
+          {/* Action CTAs */}
+          <div className="pt-4 flex flex-wrap items-center gap-4">
+            <Link
+              href="/auth/login"
+              className="px-8 py-4 bg-[#E63946] text-[#FAFAFA] font-['Space_Grotesk'] font-bold text-sm uppercase tracking-wide border-2 border-[#0A0A0A] shadow-[4px_4px_0px_0px_#0A0A0A] hover:translate-x-0.5 hover:translate-y-0.5 hover:shadow-[2px_2px_0px_0px_#0A0A0A] transition-all cursor-pointer"
             >
-              Start Autonomous Run &rarr;
-            </Button>
-          </form>
-        </div>
+              Sign In to Swarm &rarr;
+            </Link>
+            
+            <Link
+              href="/dashboard"
+              className="px-8 py-4 bg-[#FAFAFA] text-[#0A0A0A] font-['Space_Grotesk'] font-bold text-sm uppercase tracking-wide border-2 border-[#0A0A0A] shadow-[4px_4px_0px_0px_#0A0A0A] hover:bg-[#0A0A0A] hover:text-[#FAFAFA] hover:translate-x-0.5 hover:translate-y-0.5 hover:shadow-[2px_2px_0px_0px_#0A0A0A] transition-all cursor-pointer"
+            >
+              Enter Research Console
+            </Link>
 
-        {/* Swarm Architecture Summary Card (5 cols) */}
-        <div className="lg:col-span-5 border-2 border-[#0A0A0A] bg-[#FAFAFA] p-6 sm:p-8 flex flex-col justify-between">
-          <div>
-            <div className="flex items-center gap-2 pb-4 border-b-2 border-[#0A0A0A] mb-4">
-              <span className="w-3 h-3 bg-[#1D3557] inline-block" />
-              <h2 className="font-['Space_Grotesk'] font-bold text-xl uppercase tracking-tight">
-                Node Topology
-              </h2>
-            </div>
-            <p className="font-['Inter'] text-sm text-[#0A0A0A]/80 mb-6 leading-relaxed">
-              Every research run passes through strictly isolated nodes. No
-              direct agent-to-agent memory or unvalidated writes.
-            </p>
-
-            <ul className="space-y-3 font-mono text-xs">
-              <li className="flex items-start gap-2 border-l-2 border-[#0A0A0A] pl-3 py-0.5">
-                <span className="font-bold text-[#0A0A0A]">01 PLANNER</span>
-                <span className="text-[#0A0A0A]/70">— Decomposes into bounded subtasks</span>
-              </li>
-              <li className="flex items-start gap-2 border-l-2 border-[#0A0A0A] pl-3 py-0.5">
-                <span className="font-bold text-[#0A0A0A]">02 DISCOVERY</span>
-                <span className="text-[#0A0A0A]/70">— Discovers ranked web sources</span>
-              </li>
-              <li className="flex items-start gap-2 border-l-2 border-[#0A0A0A] pl-3 py-0.5">
-                <span className="font-bold text-[#0A0A0A]">03 EXTRACTOR</span>
-                <span className="text-[#0A0A0A]/70">— Pure structured extraction (SSRF guarded)</span>
-              </li>
-              <li className="flex items-start gap-2 border-l-2 border-[#E63946] pl-3 py-0.5">
-                <span className="font-bold text-[#E63946]">04 VALIDATOR</span>
-                <span className="text-[#0A0A0A]/70">— Faithfulness & injection gate</span>
-              </li>
-              <li className="flex items-start gap-2 border-l-2 border-[#2A9D8F] pl-3 py-0.5">
-                <span className="font-bold text-[#2A9D8F]">05 WRITER</span>
-                <span className="text-[#0A0A0A]/70">— Atomic Markdown & embedding persistence</span>
-              </li>
-            </ul>
-          </div>
-
-          <div className="mt-8 pt-4 border-t border-[#0A0A0A]/20 flex justify-between items-center text-xs font-mono text-[#0A0A0A]/60">
-            <span>EGRESS ALLOWLIST ACTIVE</span>
-            <span>PROMPT INJECTION GATE ACTIVE</span>
+            <Link
+              href="/auth/register"
+              className="px-6 py-4 font-['Space_Grotesk'] font-bold text-sm uppercase tracking-wide text-[#1D3557] hover:underline cursor-pointer"
+            >
+              Create Account
+            </Link>
           </div>
         </div>
-      </div>
 
-      {/* Recent Runs Section */}
-      <div className="border-t-2 border-[#0A0A0A] pt-8">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+        {/* Live Metrics Grid */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-12 pt-8 border-t-2 border-[#0A0A0A] font-mono text-xs">
+          <div className="p-3 bg-[#0A0A0A]/5 border border-[#0A0A0A]">
+            <span className="text-[#0A0A0A]/60 block mb-1">NODE TOPOLOGY</span>
+            <span className="font-['Space_Grotesk'] font-bold text-base text-[#0A0A0A]">5-Agent Graph</span>
+          </div>
+          <div className="p-3 bg-[#0A0A0A]/5 border border-[#0A0A0A]">
+            <span className="text-[#0A0A0A]/60 block mb-1">TOOL ALLOCATION</span>
+            <span className="font-['Space_Grotesk'] font-bold text-base text-[#0A0A0A]">Dynamic Budgeting</span>
+          </div>
+          <div className="p-3 bg-[#0A0A0A]/5 border border-[#0A0A0A]">
+            <span className="text-[#0A0A0A]/60 block mb-1">SYNTHESIS ENGINE</span>
+            <span className="font-['Space_Grotesk'] font-bold text-base text-[#E63946]">Overleaf-Style TeX</span>
+          </div>
+          <div className="p-3 bg-[#0A0A0A]/5 border border-[#0A0A0A]">
+            <span className="text-[#0A0A0A]/60 block mb-1">HUMAN GATING</span>
+            <span className="font-['Space_Grotesk'] font-bold text-base text-[#1D3557]">Zero-State Resumption</span>
+          </div>
+        </div>
+      </section>
+
+      {/* 5-Node Swarm Architecture Topology */}
+      <section className="space-y-6">
+        <div className="border-b-2 border-[#0A0A0A] pb-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <h2 className="font-['Space_Grotesk'] font-bold text-2xl uppercase tracking-tight">
-              Recent Research Runs
+            <span className="w-3.5 h-3.5 bg-[#1D3557] inline-block border border-[#0A0A0A]" />
+            <h2 className="font-['Space_Grotesk'] font-bold text-2xl uppercase tracking-tight text-[#0A0A0A]">
+              Deterministic Swarm Topology
             </h2>
-            <span className="font-mono text-xs bg-[#0A0A0A] text-[#FAFAFA] px-2 py-0.5">
-              {runs.length} TOTAL
-            </span>
           </div>
-          <Button variant="outline" size="sm" onClick={fetchRunsList} loading={loading}>
-            Refresh Runs
-          </Button>
+          <span className="font-mono text-xs text-[#0A0A0A]/60 uppercase">Zero Shared Memory // Safe Nodes</span>
         </div>
 
-        {/* Loading State */}
-        {loading && (
-          <div className="border-2 border-[#0A0A0A] p-8 text-center bg-[#FAFAFA] font-mono text-sm">
-            <span className="inline-block w-3 h-3 bg-[#1D3557] animate-ping mr-2" />
-            QUERYING RUN DATABASE...
-          </div>
-        )}
-
-        {/* Error State */}
-        {error && !loading && (
-          <div className="border-2 border-[#E63946] bg-[#E63946]/10 p-6 text-center">
-            <p className="font-mono text-sm text-[#E63946] mb-4">
-              FAILED TO LOAD RUNS: {error}
-            </p>
-            <Button variant="outline" size="sm" onClick={fetchRunsList}>
-              Retry Query
-            </Button>
-          </div>
-        )}
-
-        {/* Empty State */}
-        {!loading && !error && runs.length === 0 && (
-          <div className="border-2 border-[#0A0A0A] p-12 text-center bg-[#FAFAFA]">
-            <span className="w-8 h-8 border-2 border-[#0A0A0A] inline-block mb-3" />
-            <h3 className="font-['Space_Grotesk'] font-bold text-lg uppercase mb-1">
-              No Research Runs Found
-            </h3>
-            <p className="font-['Inter'] text-sm text-[#0A0A0A]/70 max-w-md mx-auto">
-              Initialize a research goal using the form above to trigger the
-              5-agent supervisor workflow.
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+          {/* Node 1 */}
+          <div className="border-2 border-[#0A0A0A] bg-[#FAFAFA] p-5 space-y-3 shadow-[3px_3px_0px_0px_#0A0A0A]">
+            <div className="flex justify-between items-center pb-2 border-b border-[#0A0A0A]/20">
+              <span className="font-['Archivo_Black'] text-lg text-[#0A0A0A]">01</span>
+              <span className="font-mono text-[10px] bg-[#0A0A0A] text-[#FAFAFA] px-1.5 py-0.5">PLANNER</span>
+            </div>
+            <h3 className="font-['Space_Grotesk'] font-bold text-sm uppercase">Goal Decomposition</h3>
+            <p className="font-['Inter'] text-xs text-[#0A0A0A]/80 leading-relaxed">
+              Accepts research prompts and recursively breaks them down into bounded subtasks with strict domain constraints.
             </p>
           </div>
-        )}
 
-        {/* Runs List Table */}
-        {!loading && !error && runs.length > 0 && (
-          <div className="border-2 border-[#0A0A0A] overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="border-b-2 border-[#0A0A0A] bg-[#0A0A0A]/5 font-['Space_Grotesk'] font-bold text-xs uppercase tracking-wider text-[#0A0A0A]">
-                  <th className="p-4 w-12 text-center">Status</th>
-                  <th className="p-4">Goal / Objective</th>
-                  <th className="p-4 w-32">Pages</th>
-                  <th className="p-4 w-32">Tokens</th>
-                  <th className="p-4 w-40">Created</th>
-                  <th className="p-4 w-28 text-right">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y border-[#0A0A0A]/10 font-mono text-xs">
-                {runs.map((r) => (
-                  <tr
-                    key={r.id}
-                    className="hover:bg-[#0A0A0A]/5 transition-colors group"
-                  >
-                    <td className="p-4 text-center">
-                      <div className="flex justify-center items-center">
-                        <StatusDot status={r.status} size="md" />
-                      </div>
-                    </td>
-                    <td className="p-4 font-['Inter'] text-sm font-medium text-[#0A0A0A]">
-                      <Link
-                        href={`/runs/${r.id}`}
-                        className="hover:text-[#E63946] transition-colors block line-clamp-2"
-                      >
-                        {r.goal}
-                      </Link>
-                      <span className="text-[11px] font-mono text-[#0A0A0A]/50 block mt-0.5">
-                        ID: {r.id}
-                      </span>
-                    </td>
-                    <td className="p-4 font-bold text-[#0A0A0A]">
-                      {r.pages_persisted} saved
-                    </td>
-                    <td className="p-4 text-[#0A0A0A]/80">
-                      {r.tokens_used.toLocaleString()}
-                    </td>
-                    <td className="p-4 text-[#0A0A0A]/60">
-                      {new Date(r.created_at).toLocaleString()}
-                    </td>
-                    <td className="p-4 text-right">
-                      <Link
-                        href={`/runs/${r.id}`}
-                        className="inline-block px-3 py-1 font-['Space_Grotesk'] font-bold text-xs uppercase border border-[#0A0A0A] hover:bg-[#0A0A0A] hover:text-[#FAFAFA] transition-colors"
-                      >
-                        View &rarr;
-                      </Link>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          {/* Node 2 */}
+          <div className="border-2 border-[#0A0A0A] bg-[#FAFAFA] p-5 space-y-3 shadow-[3px_3px_0px_0px_#0A0A0A]">
+            <div className="flex justify-between items-center pb-2 border-b border-[#0A0A0A]/20">
+              <span className="font-['Archivo_Black'] text-lg text-[#0A0A0A]">02</span>
+              <span className="font-mono text-[10px] bg-[#0A0A0A] text-[#FAFAFA] px-1.5 py-0.5">RETRIEVER</span>
+            </div>
+            <h3 className="font-['Space_Grotesk'] font-bold text-sm uppercase">Multi-Source Discovery</h3>
+            <p className="font-['Inter'] text-xs text-[#0A0A0A]/80 leading-relaxed">
+              Scouts arXiv, academic repositories, and prioritized crawl targets with DNS egress protection and allowlist checking.
+            </p>
           </div>
-        )}
-      </div>
+
+          {/* Node 3 */}
+          <div className="border-2 border-[#0A0A0A] bg-[#FAFAFA] p-5 space-y-3 shadow-[3px_3px_0px_0px_#0A0A0A]">
+            <div className="flex justify-between items-center pb-2 border-b border-[#0A0A0A]/20">
+              <span className="font-['Archivo_Black'] text-lg text-[#0A0A0A]">03</span>
+              <span className="font-mono text-[10px] bg-[#0A0A0A] text-[#FAFAFA] px-1.5 py-0.5">EXTRACTOR</span>
+            </div>
+            <h3 className="font-['Space_Grotesk'] font-bold text-sm uppercase">Sanitized Extraction</h3>
+            <p className="font-['Inter'] text-xs text-[#0A0A0A]/80 leading-relaxed">
+              Isolates DOM, strips tracking tags, extracts structured metadata, summaries, headings, and sanitizes untrusted input.
+            </p>
+          </div>
+
+          {/* Node 4 */}
+          <div className="border-2 border-[#E63946] bg-[#FAFAFA] p-5 space-y-3 shadow-[3px_3px_0px_0px_#E63946]">
+            <div className="flex justify-between items-center pb-2 border-b border-[#E63946]/30">
+              <span className="font-['Archivo_Black'] text-lg text-[#E63946]">04</span>
+              <span className="font-mono text-[10px] bg-[#E63946] text-[#FAFAFA] px-1.5 py-0.5">VALIDATOR</span>
+            </div>
+            <h3 className="font-['Space_Grotesk'] font-bold text-sm uppercase text-[#E63946]">Guardrail &amp; Gate</h3>
+            <p className="font-['Inter'] text-xs text-[#0A0A0A]/80 leading-relaxed">
+              Scores paper confidence. Flags prompt injections and halts on uncertain verdicts to solicit human verification.
+            </p>
+          </div>
+
+          {/* Node 5 */}
+          <div className="border-2 border-[#2A9D8F] bg-[#FAFAFA] p-5 space-y-3 shadow-[3px_3px_0px_0px_#2A9D8F]">
+            <div className="flex justify-between items-center pb-2 border-b border-[#2A9D8F]/30">
+              <span className="font-['Archivo_Black'] text-lg text-[#2A9D8F]">05</span>
+              <span className="font-mono text-[10px] bg-[#2A9D8F] text-[#FAFAFA] px-1.5 py-0.5">LATEX WRITER</span>
+            </div>
+            <h3 className="font-['Space_Grotesk'] font-bold text-sm uppercase text-[#2A9D8F]">Survey &amp; PDF</h3>
+            <p className="font-['Inter'] text-xs text-[#0A0A0A]/80 leading-relaxed">
+              Synthesizes academic survey articles in LaTeX with citations and tables, compiling them into downloadable PDFs.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {/* Feature Pillars: TeX Editor, Review Queue, & Dynamic Budget */}
+      <section className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="border-2 border-[#0A0A0A] bg-[#FAFAFA] p-6 space-y-3 shadow-[4px_4px_0px_0px_#0A0A0A]">
+          <span className="font-mono text-xs text-[#E63946] font-bold uppercase block">[FEATURE // 01]</span>
+          <h3 className="font-['Space_Grotesk'] font-bold text-lg uppercase text-[#0A0A0A]">
+            Overleaf-Style TeX Studio
+          </h3>
+          <p className="font-['Inter'] text-sm text-[#0A0A0A]/80 leading-relaxed">
+            Inspect generated LaTeX syntax in real time. Edit survey sections, modify bibtex citations, and compile live PDF previews with one click.
+          </p>
+        </div>
+
+        <div className="border-2 border-[#0A0A0A] bg-[#FAFAFA] p-6 space-y-3 shadow-[4px_4px_0px_0px_#0A0A0A]">
+          <span className="font-mono text-xs text-[#1D3557] font-bold uppercase block">[FEATURE // 02]</span>
+          <h3 className="font-['Space_Grotesk'] font-bold text-lg uppercase text-[#0A0A0A]">
+            Human Review Queue
+          </h3>
+          <p className="font-['Inter'] text-sm text-[#0A0A0A]/80 leading-relaxed">
+            Uncertain paper verdicts pause the state machine at checkpoint boundaries. Review candidate articles, approve to resume, or discard to seek higher-quality sources.
+          </p>
+        </div>
+
+        <div className="border-2 border-[#0A0A0A] bg-[#FAFAFA] p-6 space-y-3 shadow-[4px_4px_0px_0px_#0A0A0A]">
+          <span className="font-mono text-xs text-[#2A9D8F] font-bold uppercase block">[FEATURE // 03]</span>
+          <h3 className="font-['Space_Grotesk'] font-bold text-lg uppercase text-[#0A0A0A]">
+            Dynamic Tool Allocation
+          </h3>
+          <p className="font-['Inter'] text-sm text-[#0A0A0A]/80 leading-relaxed">
+            Replaces static budget ceilings with dynamic allocation computed from targeted pages and max tokens, preventing runaway LLM costs.
+          </p>
+        </div>
+      </section>
+
+      {/* Bottom CTA Banner */}
+      <section className="border-2 border-[#0A0A0A] bg-[#0A0A0A] text-[#FAFAFA] p-8 sm:p-12 text-center space-y-6">
+        <h2 className="font-['Archivo_Black'] text-3xl sm:text-4xl uppercase tracking-tight">
+          Ready to Conduct Autonomous Literature Synthesis?
+        </h2>
+        <p className="font-['Inter'] text-base text-[#FAFAFA]/80 max-w-xl mx-auto leading-relaxed">
+          Sign in to access your research workspace, configure Gemini or Groq model providers, and initiate your next research swarm.
+        </p>
+        <div className="pt-2 flex flex-wrap justify-center gap-4">
+          <Link
+            href="/auth/login"
+            className="px-8 py-3.5 bg-[#E63946] text-[#FAFAFA] font-['Space_Grotesk'] font-bold text-sm uppercase tracking-wide border-2 border-[#FAFAFA] hover:bg-[#FAFAFA] hover:text-[#0A0A0A] transition-colors cursor-pointer"
+          >
+            Sign In Now &rarr;
+          </Link>
+          <Link
+            href="/dashboard"
+            className="px-8 py-3.5 bg-transparent text-[#FAFAFA] font-['Space_Grotesk'] font-bold text-sm uppercase tracking-wide border-2 border-[#FAFAFA] hover:bg-[#FAFAFA] hover:text-[#0A0A0A] transition-colors cursor-pointer"
+          >
+            Open Console (Demo)
+          </Link>
+        </div>
+      </section>
     </div>
   );
 }

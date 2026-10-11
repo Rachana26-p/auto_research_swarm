@@ -16,7 +16,7 @@ export const Button: React.FC<ButtonProps> = ({
   ...props
 }) => {
   const baseClasses =
-    "inline-flex items-center justify-center font-['Space_Grotesk'] font-bold uppercase tracking-wider transition-colors disabled:opacity-50 disabled:cursor-not-allowed radius-sm cursor-pointer";
+    "inline-flex items-center justify-center font-['Space_Grotesk'] font-bold uppercase tracking-wider transition-colors disabled:opacity-50 disabled:cursor-not-allowed radius-sm cursor-pointer select-none";
 
   const sizeClasses = {
     sm: "px-3 py-1.5 text-xs",
@@ -24,16 +24,16 @@ export const Button: React.FC<ButtonProps> = ({
     lg: "px-6 py-3.5 text-base",
   }[size];
 
-  // Bauhaus styling per ui-registry.md
   let variantClasses = "";
   if (variant === "primary") {
-    variantClasses = "bg-[#0A0A0A] text-[#FAFAFA] hover:bg-[#E63946] active:bg-[#0A0A0A]";
+    variantClasses =
+      "bg-[#0A0A0A] text-[#FAFAFA] dark:bg-[#EDEEF2] dark:text-[#0A0A0A] hover:bg-[#E63946] dark:hover:bg-[#FF5C6C] dark:hover:text-[#FAFAFA] active:bg-[#0A0A0A]";
   } else if (variant === "outline") {
     variantClasses =
-      "bg-transparent text-[#0A0A0A] border-2 border-[#0A0A0A] hover:bg-[#0A0A0A] hover:text-[#FAFAFA] active:bg-[#1D3557]";
+      "bg-transparent text-[#0A0A0A] border-2 border-[#0A0A0A] dark:text-[#EDEEF2] dark:border-[#2C3142] hover:bg-[#0A0A0A] hover:text-[#FAFAFA] dark:hover:bg-[#EDEEF2] dark:hover:text-[#0A0A0A] active:bg-[#1D3557]";
   } else if (variant === "danger") {
     variantClasses =
-      "bg-[#E63946] text-[#FAFAFA] hover:bg-[#0A0A0A] active:bg-[#E63946]";
+      "bg-[#E63946] text-[#FAFAFA] dark:bg-[#FF5C6C] dark:text-[#FAFAFA] hover:bg-[#0A0A0A] dark:hover:bg-[#EDEEF2] dark:hover:text-[#0A0A0A] active:bg-[#E63946]";
   }
 
   return (

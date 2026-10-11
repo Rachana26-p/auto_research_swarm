@@ -17,6 +17,7 @@ LangGraph node that:
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any
 from urllib.parse import urlparse
@@ -48,6 +49,35 @@ from guardrails import validate_tool_schema
 logger = logging.getLogger(__name__)
 
 
+DISALLOWED_PATH_PATTERNS = re.compile(
+    r"^/(?:about|about-us|company|team|careers|jobs|contact|contact-us|privacy|terms|terms-of-service|legal|pricing|press|login|signup|cookies?|support)(?:/|$)",
+    re.IGNORECASE,
+)
+
+ACADEMIC_DOMAIN_PATTERNS = [
+    "arxiv.org",
+    "openreview.net",
+    "semanticscholar.org",
+    "paperswithcode.com",
+    "neurips.cc",
+    "iclr.cc",
+    "icml.cc",
+    "aclweb.org",
+    "proceedings.mlr.press",
+    "huggingface.co",
+    "nature.com",
+    "acm.org",
+    "ieee.org",
+    "sciencedirect.com",
+    "springer.com",
+]
+
+ACADEMIC_PATH_PATTERNS = re.compile(
+    r"/(?:abs|pdf|html|paper|papers|article|articles|publication|publications|preprints?|proceedings)/",
+    re.IGNORECASE,
+)
+
+
 def validate_and_filter_url(url: str) -> tuple[bool, str]:
     """
     Validates that a URL is a valid http:// or https:// URL with a valid hostname.
@@ -77,7 +107,8 @@ def rank_search_results(
     Filters, deduplicates, and ranks URLs from Tavily search results.
 
     Rules:
-    - Filters out malformed URLs
+    - Filters out malformed URLs and non-research navigational pages (about, careers, privacy)
+    - Prioritizes authoritative academic repositories and preprint servers
     - Deprioritizes results outside candidate_domains (reduces relevance_score, does NOT drop)
     - Deduplicates by normalized URL
     - Bounded to max_urls
@@ -87,7 +118,7 @@ def rank_search_results(
     ]
 
     seen_urls: set[str] = set()
-    ranked_candidates: list[tuple[float, RankedUrl]] = []
+    ranked_candidates: list[tuple[tuple[int, float], RankedUrl]] = []
 
     for item in results:
         is_valid, domain = validate_and_filter_url(item.url)
@@ -99,6 +130,15 @@ def rank_search_results(
         if normalized_url in seen_urls:
             continue
         seen_urls.add(normalized_url)
+
+        # Filter out obvious corporate marketing / about / legal paths from research results
+        try:
+            parsed_path = urlparse(normalized_url).path
+            if parsed_path and DISALLOWED_PATH_PATTERNS.match(parsed_path):
+                logger.info("Filtered out non-research navigational URL: %s", normalized_url)
+                continue
+        except Exception:
+            pass
 
         # Base score from Tavily result
         score = float(item.score)
@@ -115,9 +155,13 @@ def rank_search_results(
                 # Deprioritize results outside candidate domains by multiplying by 0.7
                 score = round(score * 0.7, 4)
 
+        # Prioritize academic preprint servers & paper URLs in sort order
+        is_academic = any(ad in domain for ad in ACADEMIC_DOMAIN_PATTERNS) or bool(ACADEMIC_PATH_PATTERNS.search(normalized_url))
+        priority_flag = 1 if is_academic else 0
+
         ranked_candidates.append(
             (
-                score,
+                (priority_flag, score),
                 RankedUrl(
                     url=normalized_url,
                     relevance_score=score,
@@ -126,8 +170,8 @@ def rank_search_results(
             )
         )
 
-    # Sort descending by relevance_score
-    ranked_candidates.sort(key=lambda x: x[0], reverse=True)
+    # Sort descending by priority_flag first (academic papers first), then relevance_score
+    ranked_candidates.sort(key=lambda x: (x[0][0], x[0][1]), reverse=True)
 
     final_urls = [r[1] for r in ranked_candidates[:max_urls]]
     return final_urls
@@ -291,8 +335,10 @@ async def discovery_node(state: dict[str, Any]) -> dict[str, Any]:
     start_time = time.perf_counter()
 
     # Validate input against DiscoveryInput schema
+    _discovery_fields = {"run_id", "subtask_id", "description", "candidate_domains", "max_urls", "provider", "model"}
+    discovery_state = {k: v for k, v in state.items() if k in _discovery_fields} if isinstance(state, dict) else state
     try:
-        input_data = DiscoveryInput.model_validate(state)
+        input_data = DiscoveryInput.model_validate(discovery_state)
     except ValidationError as e:
         logger.error("Discovery input validation failed: %s", e)
         raise ValueError(f"Invalid discovery input: {e}") from e
@@ -307,14 +353,26 @@ async def discovery_node(state: dict[str, Any]) -> dict[str, Any]:
 
     all_tool_calls: list[ToolCall] = []
 
-    # Build search query from subtask description
-    search_query = input_data.description.strip()
+    # Build targeted academic search query from subtask description
+    raw_query = input_data.description.strip()
+    query_lower = raw_query.lower()
+    if not any(k in query_lower for k in ("paper", "arxiv", "survey", "benchmark", "proceedings", "conference")):
+        search_query = f"{raw_query} research paper"
+    else:
+        search_query = raw_query
+
+    # Only constrain include_domains if they represent academic publication repositories
+    candidate_academic = [
+        d for d in (input_data.candidate_domains or [])
+        if any(ad in d.lower() for ad in ACADEMIC_DOMAIN_PATTERNS)
+    ]
+    include_domains = candidate_academic if candidate_academic else None
 
     search_input = TavilySearchInput(
         query=search_query,
         max_results=min(20, max(input_data.max_urls, 5)),
         search_depth="basic",
-        include_domains=input_data.candidate_domains if input_data.candidate_domains else None,
+        include_domains=include_domains,
     )
 
     ranked_urls: list[RankedUrl] = []

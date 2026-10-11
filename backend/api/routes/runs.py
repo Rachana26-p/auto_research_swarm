@@ -11,9 +11,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 
-from agents.supervisor import BudgetConfig
+from agents.supervisor import BudgetConfig, calculate_dynamic_tool_budget
 from api.deps import verify_api_key
-from api.models import RunCreateRequest, RunResponse, RunSummaryResponse
+from api.models import RunCreateRequest, RunResponse, RunSummaryResponse, RunUpdateRequest
 from api.rate_limiter import rate_limit_runs
 from api.state import RunRecord, run_manager
 
@@ -23,6 +23,10 @@ router = APIRouter(prefix="/runs", tags=["runs"], dependencies=[Depends(verify_a
 def _to_run_response(record: RunRecord) -> RunResponse:
     s = record.summary
     b = record.budget_config
+    computed_tool_calls = (
+        (b.max_tool_calls if b and b.max_tool_calls else None)
+        or calculate_dynamic_tool_budget(b.max_pages if b else 20, b.max_tokens if b else 500000)
+    )
     return RunResponse(
         id=record.run_id,
         goal=record.goal,
@@ -39,7 +43,9 @@ def _to_run_response(record: RunRecord) -> RunResponse:
         error_message=record.error_message,
         max_pages=b.max_pages if b else 20,
         max_tokens=b.max_tokens if b else 500000,
-        max_tool_calls=b.max_tool_calls if b else 200,
+        max_tool_calls=computed_tool_calls,
+        provider=record.provider,
+        model=record.model,
     )
 
 
@@ -51,16 +57,22 @@ def _to_run_response(record: RunRecord) -> RunResponse:
 )
 async def create_run(req: RunCreateRequest) -> RunResponse:
     """
-    Launch a new research run with budget limits as a background task.
+    Launch a new research run with dynamic budget limits as a background task.
     Enforces goal length limits and rate limits.
     """
+    calc_tool_calls = req.max_tool_calls or calculate_dynamic_tool_budget(req.max_pages, req.max_tokens)
     b_cfg = BudgetConfig(
         max_pages=req.max_pages,
-        max_tool_calls=req.max_tool_calls,
+        max_tool_calls=calc_tool_calls,
         max_tokens=req.max_tokens,
         max_wall_seconds=req.max_wall_seconds,
     )
-    record = await run_manager.start_run(goal=req.goal, budget_config=b_cfg)
+    record = await run_manager.start_run(
+        goal=req.goal,
+        budget_config=b_cfg,
+        provider=req.provider,
+        model=req.model,
+    )
     return _to_run_response(record)
 
 
@@ -85,6 +97,36 @@ async def list_runs() -> list[RunSummaryResponse]:
 async def get_run(run_id: UUID) -> RunResponse:
     """Get full details and execution metrics for a specific run."""
     record = run_manager.get_run(run_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    return _to_run_response(record)
+
+
+@router.patch("/{run_id}", response_model=RunResponse)
+async def update_run(run_id: UUID, req: RunUpdateRequest) -> RunResponse:
+    """Update / rename the research goal of a run."""
+    record = run_manager.update_run_goal(run_id, req.goal)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    return _to_run_response(record)
+
+
+@router.delete("/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_run(run_id: UUID) -> None:
+    """Delete a research run, canceling any active background task and cleaning its storage."""
+    deleted = await run_manager.delete_run(run_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    return None
+
+
+@router.post("/{run_id}/redo", response_model=RunResponse)
+async def redo_run(run_id: UUID) -> RunResponse:
+    """
+    Rerun/redo a failed or interrupted research run from scratch.
+    Maintains the run ID, clears failure errors, and re-executes the swarm.
+    """
+    record = await run_manager.redo_run(run_id)
     if not record:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
     return _to_run_response(record)

@@ -25,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.routes import (
     guardrails_router,
     knowledge_router,
+    latex_router,
     reviews_router,
     runs_router,
 )
@@ -56,6 +57,7 @@ def create_app() -> FastAPI:
     app.include_router(reviews_router)
     app.include_router(knowledge_router)
     app.include_router(guardrails_router)
+    app.include_router(latex_router)
 
     return app
 

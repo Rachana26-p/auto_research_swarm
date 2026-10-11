@@ -43,7 +43,6 @@ from shared.models import (
 
 logger = logging.getLogger(__name__)
 
-# System prompt for planning reasoning
 PLANNER_SYSTEM_PROMPT = """You are an expert research planner.
 Your job is to break down a high-level research goal into a bounded, prioritized list of concrete subtasks and candidate target domains.
 
@@ -54,16 +53,18 @@ CRITICAL CONSTRAINTS:
     {
       "subtask_id": "string (e.g. subtask_1)",
       "description": "string (clear subtask explanation, NO URLs allowed)",
-      "candidate_domains": ["string (domain hostnames only, e.g. 'wikipedia.org', NOT full URLs)"]
+      "candidate_domains": ["string (domain hostnames only, e.g. 'arxiv.org', NOT full URLs)"]
     }
   ],
   "reasoning": "string (short justification for the subtask decomposition)"
 }
 
 2. Do NOT include full URLs in subtask descriptions or in candidate_domains.
-   - Example valid domain: "arxiv.org", "nature.com", "github.com"
+   - Example valid domains: "arxiv.org", "openreview.net", "semanticscholar.org", "paperswithcode.com", "neurips.cc", "nature.com"
    - Invalid: "https://arxiv.org/abs/1234", "http://domain.com/path"
-3. Do not invent obscure or fabricated domain names. If uncertain, provide fewer, reputable domains or general domains.
+3. Domain Selection Guidance:
+   - For academic, scientific, or AI research, ALWAYS prioritize preprint and publication repositories (e.g. 'arxiv.org', 'openreview.net', 'semanticscholar.org', 'paperswithcode.com') over general corporate homepages.
+   - Do not invent obscure or fabricated domain names.
 4. Output ONLY the JSON object, nothing else.
 """
 
@@ -140,11 +141,19 @@ class LLMPlanner:
         config: AppConfig,
         retry_attempts: int = 2,
         retry_wait: Any = None,
+        provider: LLMProvider | None = None,
+        provider_name: str | None = None,
+        model_name: str | None = None,
     ):
         self.config = config
         self.retry_attempts = retry_attempts
         self.retry_wait = retry_wait
-        self._provider = get_llm_provider(role="reasoning", config=config)
+        self._provider = provider or get_llm_provider(
+            role="reasoning",
+            config=config,
+            provider=provider_name,
+            model=model_name,
+        )
 
     async def __aenter__(self) -> LLMPlanner:
         return self
@@ -263,8 +272,10 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
     start_time = time.perf_counter()
 
     # Validate input against schema
+    _planner_fields = {"run_id", "goal", "max_subtasks", "max_domains_per_subtask", "provider", "model"}
+    planner_state = {k: v for k, v in state.items() if k in _planner_fields} if isinstance(state, dict) else state
     try:
-        input_data = PlannerInput.model_validate(state)
+        input_data = PlannerInput.model_validate(planner_state)
     except ValidationError as e:
         logger.error("Planner input validation failed: %s", e)
         raise ValueError(f"Invalid planner input: {e}") from e
@@ -272,7 +283,11 @@ async def planner_node(state: dict[str, Any]) -> dict[str, Any]:
     config = get_config()
     logger.info("Planner starting for run %s: '%s'", input_data.run_id, input_data.goal[:80])
 
-    async with LLMPlanner(config) as planner:
+    async with LLMPlanner(
+        config,
+        provider_name=state.get("provider"),
+        model_name=state.get("model"),
+    ) as planner:
         output, tool_call = await planner.plan(input_data)
 
     duration = int((time.perf_counter() - start_time) * 1000)

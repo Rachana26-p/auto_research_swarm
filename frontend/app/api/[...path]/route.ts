@@ -79,12 +79,123 @@ export async function POST(
       body: bodyText,
     });
 
+    const contentType = backendResp.headers.get("content-type") || "application/json";
+    if (contentType.includes("application/pdf") || contentType.includes("octet-stream")) {
+      const buffer = await backendResp.arrayBuffer();
+      return new Response(buffer, {
+        status: backendResp.status,
+        headers: {
+          "Content-Type": contentType,
+          "Content-Disposition": backendResp.headers.get("content-disposition") || "inline",
+        },
+      });
+    }
+
     const data = await backendResp.text();
     return new Response(data, {
       status: backendResp.status,
       headers: {
-        "Content-Type": backendResp.headers.get("content-type") || "application/json",
+        "Content-Type": contentType,
       },
+    });
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ error: `Backend unavailable: ${error instanceof Error ? error.message : "Unknown error"}` }),
+      { status: 502, headers: { "Content-Type": "application/json" } }
+    );
+  }
+}
+
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ path: string[] }> }
+) {
+  const { path } = await params;
+  const search = request.nextUrl.search;
+  const targetUrl = buildBackendUrl(path, search);
+
+  const bodyText = await request.text();
+  const headers = new Headers();
+  headers.set("X-API-Key", getApiKey());
+  headers.set("Content-Type", "application/json");
+
+  try {
+    const backendResp = await fetch(targetUrl, {
+      method: "PATCH",
+      headers,
+      body: bodyText,
+    });
+
+    const contentType = backendResp.headers.get("content-type") || "application/json";
+    const data = await backendResp.text();
+    return new Response(data, {
+      status: backendResp.status,
+      headers: { "Content-Type": contentType },
+    });
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ error: `Backend unavailable: ${error instanceof Error ? error.message : "Unknown error"}` }),
+      { status: 502, headers: { "Content-Type": "application/json" } }
+    );
+  }
+}
+
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<{ path: string[] }> }
+) {
+  const { path } = await params;
+  const search = request.nextUrl.search;
+  const targetUrl = buildBackendUrl(path, search);
+
+  const bodyText = await request.text();
+  const headers = new Headers();
+  headers.set("X-API-Key", getApiKey());
+  headers.set("Content-Type", "application/json");
+
+  try {
+    const backendResp = await fetch(targetUrl, {
+      method: "PUT",
+      headers,
+      body: bodyText,
+    });
+
+    const contentType = backendResp.headers.get("content-type") || "application/json";
+    const data = await backendResp.text();
+    return new Response(data, {
+      status: backendResp.status,
+      headers: { "Content-Type": contentType },
+    });
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ error: `Backend unavailable: ${error instanceof Error ? error.message : "Unknown error"}` }),
+      { status: 502, headers: { "Content-Type": "application/json" } }
+    );
+  }
+}
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ path: string[] }> }
+) {
+  const { path } = await params;
+  const search = request.nextUrl.search;
+  const targetUrl = buildBackendUrl(path, search);
+
+  const headers = new Headers();
+  headers.set("X-API-Key", getApiKey());
+
+  try {
+    const backendResp = await fetch(targetUrl, {
+      method: "DELETE",
+      headers,
+    });
+
+    const contentType = backendResp.headers.get("content-type") || "application/json";
+    const data = await backendResp.text();
+    return new Response(data, {
+      status: backendResp.status,
+      headers: { "Content-Type": contentType },
     });
   } catch (error) {
     return new Response(

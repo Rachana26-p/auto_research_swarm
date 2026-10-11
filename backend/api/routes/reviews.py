@@ -16,9 +16,12 @@ router = APIRouter(prefix="/reviews", tags=["reviews"], dependencies=[Depends(ve
 
 
 @router.get("", response_model=list[ReviewResponse])
-async def list_pending_reviews() -> list[ReviewResponse]:
-    """Retrieve all pending UNCERTAIN items awaiting human decision."""
-    reviews = run_manager.list_pending_reviews()
+async def list_reviews(
+    run_id: UUID | None = None,
+    include_resolved: bool = True,
+) -> list[ReviewResponse]:
+    """Retrieve UNCERTAIN items awaiting human decision or resolved reviews, optionally filtered by run_id."""
+    reviews = run_manager.list_reviews(run_id=run_id, include_resolved=include_resolved)
     return [
         ReviewResponse(
             id=r.id,

@@ -495,26 +495,50 @@ class DeterministicFallbackEmbeddingProvider(EmbeddingProvider):
 # FACTORY FUNCTIONS
 # ============================================================
 
-def get_llm_provider(role: str = "reasoning", config: AppConfig | None = None) -> LLMProvider:
+def get_llm_provider(
+    role: str = "reasoning",
+    config: AppConfig | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+) -> LLMProvider:
     """
-    Factory returning configured LLMProvider based on role and environment.
-    Reasoning role (Planner, Validator) prefers Groq free tier.
-    Falls back to Gemini free tier, then offline deterministic fallback.
+    Factory returning configured LLMProvider based on role, user selection, and environment.
+    If provider and model are explicitly provided, honours that choice.
+    Otherwise defaults to Groq free tier -> Gemini -> offline deterministic fallback.
     """
     cfg = config or get_config()
+    req_provider = (provider or "").strip().lower()
 
-    # 1. Groq Free Tier (Planner & Validator priority)
+    # User explicitly selected Gemini
+    if req_provider == "gemini":
+        if cfg.google_api_key:
+            return GeminiProvider(
+                api_key=cfg.google_api_key,
+                model=model or cfg.gemini_model,
+            )
+        logger.warning("Gemini requested but GOOGLE_API_KEY not configured, falling back to available provider")
+
+    # User explicitly selected Groq
+    if req_provider == "groq":
+        if cfg.groq_api_key:
+            return GroqProvider(
+                api_key=cfg.groq_api_key,
+                model=model or cfg.groq_model,
+            )
+        logger.warning("Groq requested but GROQ_API_KEY not configured, falling back to available provider")
+
+    # Default heuristic: Groq Free Tier (Planner & Validator priority)
     if cfg.groq_api_key and cfg.groq_model:
         return GroqProvider(
             api_key=cfg.groq_api_key,
-            model=cfg.groq_model,
+            model=model or cfg.groq_model,
         )
 
     # 2. Google Gemini Free Tier
     if cfg.google_api_key:
         return GeminiProvider(
             api_key=cfg.google_api_key,
-            model=cfg.gemini_model,
+            model=model or cfg.gemini_model,
         )
 
     # 3. Deterministic offline fallback

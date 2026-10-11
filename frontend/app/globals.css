@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --color-ink: #0A0A0A;
   --color-paper: #FAFAFA;
@@ -36,9 +38,10 @@ body {
   margin: 0;
   padding: 0;
   -webkit-font-smoothing: antialiased;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-/* Bauhaus Grid and structural borders */
+/* Grid and structural borders */
 .border-default {
   border: 2px solid #0A0A0A;
 }
@@ -51,7 +54,7 @@ body {
   border: 3px solid #1D3557;
 }
 
-/* Sharp containers by design */
+/* Containers and geometry */
 * {
   border-radius: 0;
 }
@@ -59,4 +62,64 @@ body {
 /* Interactive control radius-sm exception (4px) */
 .radius-sm {
   border-radius: 4px;
+}
+
+/* ============================================================
+   DARK MODE PALETTE & CONTRAST REFINEMENT
+   ============================================================ */
+html.dark {
+  color-scheme: dark;
+}
+
+html.dark body {
+  background-color: #0C0D12;
+  color: #EDEEF2;
+}
+
+html.dark .border-default {
+  border-color: #2C3142;
+}
+
+/* Form Controls in dark mode */
+html.dark input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+html.dark textarea,
+html.dark select {
+  background-color: #14161E;
+  color: #EDEEF2;
+  border-color: #2C3142;
+}
+
+html.dark select option {
+  background-color: #14161E;
+  color: #EDEEF2;
+}
+
+html.dark input::placeholder,
+html.dark textarea::placeholder {
+  color: #6C7282;
+}
+
+/* Code, Preformatted & Tables */
+html.dark pre,
+html.dark code {
+  background-color: #161822;
+  color: #E2E4EC;
+}
+
+html.dark table {
+  border-color: #2C3142;
+}
+
+html.dark th {
+  color: #CCD0DC;
+  background-color: rgba(255, 255, 255, 0.05);
+  border-color: #2C3142;
+}
+
+html.dark td {
+  border-color: #2C3142;
+}
+
+html.dark tr:hover {
+  background-color: rgba(255, 255, 255, 0.04);
 }

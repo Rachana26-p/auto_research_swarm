@@ -7,7 +7,7 @@ and manages human-in-the-loop review approval/rejection.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 from typing import Any, AsyncGenerator, Dict, List, Optional
 from uuid import UUID, uuid4
@@ -99,18 +99,24 @@ class RunRecord:
         goal: str,
         budget_config: BudgetConfig,
         config: AppConfig,
+        provider: str | None = None,
+        model: str | None = None,
     ):
         self.run_id = run_id
         self.goal = goal
         self.budget_config = budget_config
         self.config = config
+        self.provider: str = provider or "gemini"
+        self.model: str = model or "gemini-1.5-flash"
         self.status: str = "pending"  # pending, running, completed, interrupted, failed
-        self.created_at: datetime = datetime.utcnow()
+        self.created_at: datetime = datetime.now(timezone.utc)
         self.completed_at: Optional[datetime] = None
         self.summary: dict[str, Any] = {
             "run_id": str(run_id),
             "goal": goal,
             "status": "pending",
+            "provider": self.provider,
+            "model": self.model,
             "pages_processed": 0,
             "pages_persisted": 0,
             "pages_uncertain": [],
@@ -139,7 +145,7 @@ class RunRecord:
         event = {
             "run_id": str(self.run_id),
             "event_type": event_type,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             **data,
         }
         self.events.append(event)
@@ -198,52 +204,43 @@ class RunManager:
         return self.reviews.get(review_id)
 
     def list_pending_reviews(self) -> list[ReviewRecord]:
-        # Synthesize reviews for any interrupted run lacking an active pending review
-        for r in self.runs.values():
-            if r.status == "interrupted":
-                existing = [rev for rev in self.reviews.values() if rev.run_id == r.run_id and rev.status == "pending"]
-                if not existing:
-                    state = r.checkpoint_state or r.summary or {}
-                    uncertain_pages = state.get("pages_uncertain", [])
-                    if uncertain_pages:
-                        for up in uncertain_pages:
-                            rev_id = uuid4()
-                            raw_pid = up.get("page_id")
-                            try:
-                                pid = UUID(str(raw_pid)) if raw_pid else uuid4()
-                            except Exception:
-                                pid = uuid4()
-                            self.reviews[rev_id] = ReviewRecord(
-                                review_id=rev_id,
-                                run_id=r.run_id,
-                                page_id=pid,
-                                url=str(up.get("url", "")),
-                                validator_output=up.get("validator_output") or {"verdict": "uncertain"},
-                                checkpoint_state=state,
-                            )
-                    else:
-                        rev_id = uuid4()
-                        raw_pid = state.get("page_id")
-                        try:
-                            pid = UUID(str(raw_pid)) if raw_pid else uuid4()
-                        except Exception:
-                            pid = uuid4()
-                        val_data = state.get("validator_output") or {
-                            "verdict": "budget_warning" if "budget" in state else "uncertain",
-                            "confidence": 0.5,
-                            "relevance_notes": "Interrupted execution awaiting human review",
-                            "faithfulness_notes": state.get("error", "Human confirmation required to resume or discard"),
-                            "budget": state.get("budget", {}),
-                        }
-                        self.reviews[rev_id] = ReviewRecord(
-                            review_id=rev_id,
-                            run_id=r.run_id,
-                            page_id=pid,
-                            url=str(state.get("url") or state.get("current_url") or ""),
-                            validator_output=val_data,
-                            checkpoint_state=state,
-                        )
         return [r for r in self.reviews.values() if r.status == "pending"]
+
+    def list_reviews(self, run_id: UUID | None = None, include_resolved: bool = True) -> list[ReviewRecord]:
+        items = list(self.reviews.values())
+        if run_id is not None:
+            items = [r for r in items if r.run_id == run_id]
+        if not include_resolved:
+            items = [r for r in items if r.status == "pending"]
+        return sorted(items, key=lambda r: r.created_at, reverse=True)
+
+    def update_run_goal(self, run_id: UUID, new_goal: str) -> Optional[RunRecord]:
+        record = self.runs.get(run_id)
+        if not record:
+            return None
+        record.goal = new_goal.strip()
+        return record
+
+    async def delete_run(self, run_id: UUID) -> bool:
+        record = self.runs.pop(run_id, None)
+        if not record:
+            return False
+        if record.task and not record.task.done():
+            record.task.cancel()
+        # Clean associated reviews
+        associated_rev_ids = [k for k, r in self.reviews.items() if r.run_id == run_id]
+        for k in associated_rev_ids:
+            self.reviews.pop(k, None)
+        # Clean isolated folder from disk
+        try:
+            cfg = record.config or get_config()
+            k_dir = Path(cfg.knowledge_dir or "./knowledge") / str(run_id)
+            if k_dir.exists():
+                import shutil
+                shutil.rmtree(k_dir, ignore_errors=True)
+        except Exception as exc:
+            logger.warning("Error deleting directory for run %s: %s", run_id, exc)
+        return True
 
     async def start_run(
         self,
@@ -251,12 +248,21 @@ class RunManager:
         budget_config: BudgetConfig | None = None,
         config: AppConfig | None = None,
         run_id: UUID | None = None,
+        provider: str | None = None,
+        model: str | None = None,
     ) -> RunRecord:
         rid = run_id or uuid4()
         cfg = config or get_config()
         b_cfg = budget_config or BudgetConfig()
 
-        record = RunRecord(run_id=rid, goal=goal, budget_config=b_cfg, config=cfg)
+        record = RunRecord(
+            run_id=rid,
+            goal=goal,
+            budget_config=b_cfg,
+            config=cfg,
+            provider=provider,
+            model=model,
+        )
         self.runs[rid] = record
 
         # Custom checkpoint callback to intercept node transitions and emit SSE events
@@ -344,6 +350,8 @@ class RunManager:
             budget_config=b_cfg,
             checkpoint_fn=checkpoint_callback,
             config=cfg,
+            provider=provider,
+            model=model,
         )
         record.orchestrator = orchestrator
 
@@ -378,7 +386,7 @@ class RunManager:
                 )
 
             record.status = "completed"
-            record.completed_at = datetime.utcnow()
+            record.completed_at = datetime.now(timezone.utc)
             record.summary.update(summary)
             record.emit_event("run_completed", {"summary": record.summary})
             await _update_run_in_supabase(record.config, record.run_id, "completed", record.summary)
@@ -480,6 +488,119 @@ class RunManager:
                 human_decision=decision,
             )
         )
+        record.task = task
+        return record
+
+    async def redo_run(self, run_id: UUID) -> Optional[RunRecord]:
+        """
+        Reruns/redoes a failed or interrupted research run from scratch.
+        Logs the failure event for audit trail, clears errors, and restarts supervisor execution.
+        """
+        record = self.get_run(run_id)
+        if not record:
+            return None
+
+        previous_error = record.error_message or "Run failed"
+        logger.info("Redoing research run %s after previous failure: %s", run_id, previous_error)
+
+        # Log audit trail event of the redo attempt
+        record.emit_event(
+            "run_retrying",
+            {
+                "previous_status": record.status,
+                "previous_error": previous_error,
+                "message": f"Retrying research run after failure: {previous_error}",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+        # Reset execution state
+        record.status = "running"
+        record.error_message = None
+        record.completed_at = None
+        record.checkpoint_state = None
+        record.summary = {
+            "subtasks": [],
+            "pages_processed": 0,
+            "pages_passed": 0,
+            "pages_uncertain": [],
+            "pages_failed": 0,
+            "pages_written": [],
+            "tool_calls_made": 0,
+            "tokens_used": 0,
+            "wall_clock_seconds": 0.0,
+            "errors": [],
+        }
+
+        # Fresh orchestrator
+        orchestrator = SupervisorOrchestrator(
+            budget_config=record.budget_config,
+            config=record.config,
+            provider=record.provider,
+            model=record.model,
+        )
+        record.orchestrator = orchestrator
+
+        async def checkpoint_callback(
+            node_name: str,
+            state_snapshot: dict[str, Any],
+            duration_ms: int,
+            status: Any,
+            error_message: str | None = None,
+            **kwargs: Any,
+        ) -> None:
+            record.summary.update({
+                k: state_snapshot[k]
+                for k in ("pages_processed", "pages_persisted", "tool_calls_made", "tokens_used", "wall_clock_seconds")
+                if k in state_snapshot
+            })
+            agent_text = ""
+            if node_name == "planner":
+                subtasks = state_snapshot.get("subtasks", [])
+                agent_text = (
+                    f"Generated {len(subtasks)} research subtasks:\n"
+                    + "\n".join(f"  • [{s.get('subtask_id', '')}] {s.get('description', '')}" for s in subtasks)
+                )
+            elif node_name == "discovery":
+                urls = state_snapshot.get("urls", [])
+                agent_text = (
+                    f"Discovered {len(urls)} research URLs:\n"
+                    + "\n".join(f"  • {u.get('url', '')} (score: {u.get('relevance_score', 0):.2f})" for u in urls[:5])
+                )
+            elif node_name == "extractor":
+                ep = state_snapshot.get("extracted_page", {})
+                title = ep.get("title", "Untitled")
+                desc = ep.get("description", "")
+                agent_text = f"Extracted research document:\nTitle: {title}\nSummary: {desc[:200]}"
+            elif node_name == "validator":
+                vr = state_snapshot.get("validation_results", {})
+                first_vr = next(iter(vr.values()), {}) if vr else {}
+                verdict = first_vr.get("verdict", "UNKNOWN")
+                faith = first_vr.get("faithfulness_notes", "")
+                agent_text = f"Validation Verdict: {verdict}\nFaithfulness: {faith}"
+            elif node_name == "writer":
+                p_id = state_snapshot.get("page_id", "")
+                agent_text = f"Persisted research paper to knowledge base (Page ID: {p_id})"
+
+            record.emit_event(
+                "node_transition",
+                {
+                    "node": node_name,
+                    "status": str(status),
+                    "duration_ms": duration_ms,
+                    "error_message": error_message,
+                    "agent_text": agent_text,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "pages_processed": record.summary.get("pages_processed", 0),
+                    "tool_calls_made": record.summary.get("tool_calls_made", 0),
+                    "tokens_used": record.summary.get("tokens_used", 0),
+                    "wall_clock_seconds": record.summary.get("wall_clock_seconds", 0),
+                },
+            )
+
+        orchestrator._do_checkpoint = checkpoint_callback
+        await _update_run_in_supabase(record.config, record.run_id, "running")
+        task = asyncio.create_task(self._run_supervisor_loop(record, orchestrator))
         record.task = task
         return record
 

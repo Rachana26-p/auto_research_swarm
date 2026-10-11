@@ -80,13 +80,29 @@ class NodeConfig:
     retry_wait_max: float = 5.0
 
 
+def calculate_dynamic_tool_budget(max_pages: int, max_tokens: int) -> int:
+    """
+    Dynamically computes a realistic tool call budget instead of an arbitrary 200 limit.
+    Formula: ~5-6 calls per target page (discovery, extraction, validation, writing/embedding)
+    plus 10 base calls for initial planning & subtask decomposition.
+    """
+    page_budget = (max_pages * 5) + 10
+    token_budget = max(15, max_tokens // 2500)
+    return max(20, min(page_budget, token_budget))
+
+
 @dataclass
 class BudgetConfig:
     max_pages: int = 20
-    max_tool_calls: int = 200
+    max_tool_calls: int | None = None
     max_tokens: int = 500_000
     max_wall_seconds: float = 1800.0
     budget_warn_fraction: float = 0.8
+    budget_warning_fired: bool = False
+
+    def __post_init__(self) -> None:
+        if self.max_tool_calls is None or self.max_tool_calls <= 0:
+            self.max_tool_calls = calculate_dynamic_tool_budget(self.max_pages, self.max_tokens)
 
 
 DEFAULT_NODE_CONFIGS: dict[str, NodeConfig] = {
@@ -374,6 +390,8 @@ class SupervisorOrchestrator:
         writer_fn:     Callable | None = None,
         checkpoint_fn: Callable | None = None,
         config:        AppConfig | None = None,
+        provider:      str | None = None,
+        model:         str | None = None,
     ) -> None:
         self.node_configs   = node_configs  or DEFAULT_NODE_CONFIGS
         self.budget_config  = budget_config or BudgetConfig()
@@ -384,6 +402,8 @@ class SupervisorOrchestrator:
         self._writer_fn     = writer_fn
         self._checkpoint_fn = checkpoint_fn
         self._config        = config
+        self.provider       = provider
+        self.model          = model
         self.checkpoint_history: list[dict[str, Any]] = []
 
     def _get_fns(self) -> dict[str, Callable]:
@@ -437,6 +457,13 @@ class SupervisorOrchestrator:
         """
         cfg = self.node_configs.get(node_name, NodeConfig(timeout_seconds=60.0, max_retries=2))
         budget.check_hard_limits(state)
+
+        # Inject requested LLM provider and model into node execution state
+        if isinstance(state, dict):
+            if self.provider:
+                state.setdefault("provider", self.provider)
+            if self.model:
+                state.setdefault("model", self.model)
 
         start = time.monotonic()
         last_exc: Exception | None = None
@@ -554,6 +581,7 @@ class SupervisorOrchestrator:
             budget.pages_processed = summary.get("pages_processed", 0)
             budget.tool_calls_made = summary.get("tool_calls_made", 0)
             budget.tokens_used = summary.get("tokens_used", 0)
+            budget.budget_warning_fired = summary.get("budget_warning_fired", True)
             subtasks = summary.get("subtasks", [])
             processed_urls = {
                 item.get("url") for item in summary.get("pages_written", [])
@@ -646,6 +674,7 @@ class SupervisorOrchestrator:
 
             budget.check_hard_limits(summary)
             if budget.check_warn_threshold(summary):
+                summary["budget_warning_fired"] = True
                 raise SupervisorInterrupt(
                     InterruptReason.BUDGET_WARNING,
                     {**summary, "subtask_id": subtask_id, "budget": budget.to_dict()}
@@ -684,6 +713,7 @@ class SupervisorOrchestrator:
                 budget.check_hard_limits(summary)
 
                 if budget.check_warn_threshold(summary):
+                    summary["budget_warning_fired"] = True
                     raise SupervisorInterrupt(
                         InterruptReason.BUDGET_WARNING,
                         {**summary, "current_url": url, "budget": budget.to_dict()}
@@ -728,7 +758,20 @@ class SupervisorOrchestrator:
                 except RuntimeError as exc:
                     raise SupervisorInterrupt(
                         InterruptReason.GUARDRAIL_REJECT,
-                        {**summary, "url": url, "page_id": str(page_id), "error": str(exc)},
+                        {
+                            **summary,
+                            "url": url,
+                            "page_id": str(page_id),
+                            "error": str(exc),
+                            "extracted_json": ep.model_dump(),
+                            "candidate_paper": {
+                                "url": url,
+                                "page_id": str(page_id),
+                                "title": ep.title,
+                                "summary": getattr(ep, "description", "") or getattr(ep, "summary", ""),
+                                "headings": ep.headings,
+                            },
+                        },
                     )
 
                 val_results = val_result.get("validation_results", {})
@@ -754,12 +797,16 @@ class SupervisorOrchestrator:
 
                 # Conditional Edge: UNCERTAIN -> interrupt()
                 if route == "interrupt":
-                    summary["pages_uncertain"].append({
+                    candidate_paper = {
                         "url": url,
                         "page_id": str(page_id),
-                        "validator_output": val_dict,
+                        "title": ep.title,
+                        "summary": getattr(ep, "description", "") or getattr(ep, "summary", ""),
+                        "headings": ep.headings,
                         "extracted_json": ep.model_dump(),
-                    })
+                        "validator_output": val_dict,
+                    }
+                    summary["pages_uncertain"].append(candidate_paper)
                     await self._do_checkpoint(
                         config=config,
                         run_id=run_id,
@@ -771,7 +818,14 @@ class SupervisorOrchestrator:
                     )
                     raise SupervisorInterrupt(
                         InterruptReason.UNCERTAIN_VERDICT,
-                        {**summary, "url": url, "page_id": str(page_id), "validator_output": val_dict},
+                        {
+                            **summary,
+                            "url": url,
+                            "page_id": str(page_id),
+                            "validator_output": val_dict,
+                            "extracted_json": ep.model_dump(),
+                            "candidate_paper": candidate_paper,
+                        },
                     )
 
                 # Conditional Edge: FAIL -> discard
@@ -818,6 +872,33 @@ class SupervisorOrchestrator:
                 except RuntimeError as exc:
                     summary["errors"].append({"url": url, "stage": "writer", "error": str(exc)})
                     summary["pages_failed"] += 1
+
+        # Automatic LaTeX Research Survey Synthesis (Overleaf-ready)
+        try:
+            from agents.latex_synthesizer import generate_latex_from_run
+            latex_code = generate_latex_from_run(
+                goal=goal,
+                pages=summary.get("pages_written", []),
+                summary=summary,
+            )
+            summary["latex_code"] = latex_code
+            k_dir = Path(config.knowledge_dir or "./knowledge") / str(run_id)
+            k_dir.mkdir(parents=True, exist_ok=True)
+            tex_file = k_dir / "report.tex"
+            tex_file.write_text(latex_code, encoding="utf-8")
+            summary["latex_path"] = str(tex_file)
+
+            await self._do_checkpoint(
+                config=config,
+                run_id=run_id,
+                node_name="latex_synthesizer",
+                state_snapshot={**summary, "latex_summary": f"LaTeX survey generated ({len(latex_code)} chars)"},
+                duration_ms=45,
+                status=LogStatus.SUCCESS,
+                error_message=None,
+            )
+        except Exception as l_exc:
+            logger.warning("LaTeX survey synthesis non-fatal error: %s", l_exc)
 
         summary["pages_processed"] = budget.pages_processed
         summary["tool_calls_made"] = budget.tool_calls_made

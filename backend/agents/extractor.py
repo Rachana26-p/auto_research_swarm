@@ -127,9 +127,11 @@ Output ONLY valid JSON matching this schema:
 }
 
 Additional rules:
-- ALWAYS provide a meaningful "description" (at least 20 characters summarizing the article) and "main_content" (at least 150 characters detailing key findings). NEVER return empty strings or placeholders for description or main_content.
-- Strip navigation, footer, sidebar, ads — keep only main content
-- Preserve factual information; do not hallucinate
+- STRICT FAITHFULNESS GUARANTEE: Extract ONLY factual statements, headings, links, author names, and findings that are EXPLICITLY present in <page_content>.
+- ABSOLUTELY NEVER hallucinate, extrapolate, or invent external model names, metrics, author names, or claims not found in the source snippet.
+- If the page has sparse or missing information for headings, author, or dates, return empty lists or null for those fields rather than inventing them.
+- Summarize the actual content faithfully for "description" (at least 20 chars) and "main_content" (at least 150 chars). Do NOT fabricate claims.
+- Strip navigation, footer, sidebar, ads — keep only verified article content.
 """
 
 # URL and content are wrapped in explicit XML-style tags so the model
@@ -693,8 +695,10 @@ async def extractor_node(state: dict[str, Any]) -> dict[str, Any]:
     - tool_calls: list[ToolCall]
     """
     # Validate input against schema
+    _extractor_fields = {"url", "run_id", "page_id", "provider", "model"}
+    extractor_state = {k: v for k, v in state.items() if k in _extractor_fields} if isinstance(state, dict) else state
     try:
-        input_data = ExtractorInput.model_validate(state)
+        input_data = ExtractorInput.model_validate(extractor_state)
     except ValidationError as e:
         logger.error("Extractor input validation failed: %s", e)
         raise ValueError(f"Invalid extractor input: {e}") from e

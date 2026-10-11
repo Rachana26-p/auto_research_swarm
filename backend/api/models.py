@@ -24,9 +24,15 @@ class APIModel(BaseModel):
 class RunCreateRequest(APIModel):
     goal: str = Field(..., min_length=1, max_length=5000, description="Research goal")
     max_pages: int = Field(default=20, ge=1, le=100)
-    max_tool_calls: int = Field(default=200, ge=1, le=1000)
+    max_tool_calls: Optional[int] = Field(default=None, ge=1, le=1000)
     max_tokens: int = Field(default=500000, ge=1000, le=2000000)
     max_wall_seconds: float = Field(default=1800.0, ge=10.0, le=7200.0)
+    provider: Optional[str] = Field(default="gemini", description="LLM provider: gemini or groq")
+    model: Optional[str] = Field(default="gemini-1.5-flash", description="Model name")
+
+
+class RunUpdateRequest(APIModel):
+    goal: str = Field(..., min_length=1, max_length=5000, description="Updated research goal / title")
 
 
 class RunResponse(APIModel):
@@ -46,6 +52,8 @@ class RunResponse(APIModel):
     max_pages: int = 20
     max_tokens: int = 500000
     max_tool_calls: int = 200
+    provider: Optional[str] = "gemini"
+    model: Optional[str] = "gemini-1.5-flash"
 
 
 class RunSummaryResponse(APIModel):
