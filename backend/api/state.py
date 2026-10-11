@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import logging
+from pathlib import Path
+import shutil
 from typing import Any, AsyncGenerator, Dict, List, Optional
 from uuid import UUID, uuid4
 
@@ -253,7 +255,6 @@ class RunManager:
             cfg = record.config or get_config()
             k_dir = Path(cfg.knowledge_dir or "./knowledge") / str(run_id)
             if k_dir.exists():
-                import shutil
                 shutil.rmtree(k_dir, ignore_errors=True)
         except Exception as exc:
             logger.warning("Error deleting directory for run %s: %s", run_id, exc)
