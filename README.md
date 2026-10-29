@@ -218,3 +218,33 @@ NEXT_PUBLIC_API_KEY=
 | **Google Gemini**<br>*(Alternative validator & embeddings)* | `GOOGLE_API_KEY`<br>`GEMINI_MODEL`<br>`GEMINI_EMBEDDING_MODEL` | 15 RPM, 1,500 RPD, 1,000,000 TPM; `text-embedding-004` output dimensionality = 768 | [Gemini API Embedding Guide](https://ai.google.dev/gemini-api/docs/embeddings)<br>[Gemini Rate Limits](https://ai.google.dev/gemini-api/docs/models/gemini#rate-limits) |
 | **Tavily Search**<br>*(Discovery crawler)* | `TAVILY_API_KEY` | 1,000 monthly credits free, 20 RPM | [Tavily Pricing & Limits](https://docs.tavily.com) |
 
+---
+
+## Operations & Disaster Recovery Runbooks
+
+- **Database Outage Recovery (`instance_db_down`)**: Complete runbook detailing root causes, manual dashboard restart steps, circuit breaker fast-failover, `paused_infra` checkpoint auto-resumption, and global banner behavior. See [docs/runbooks/db_outage.md](docs/runbooks/db_outage.md).
+
+---
+
+## Supabase Dashboard Configuration Checklist
+
+Settings you must configure in the Supabase Dashboard (**Project Settings &rarr; Authentication**):
+
+- [ ] **Site URL**: Set to your production domain (e.g. `https://auto-research-swarm.vercel.app`) or `http://localhost:3000` for local testing.
+- [ ] **Redirect URLs (Allowlist)**: Add both:
+  - `http://localhost:3000/auth/callback`
+  - `https://*.vercel.app/auth/callback`
+  - `https://your-production-domain.com/auth/callback`
+- [ ] **Email Confirmations**: Works with confirmation either **ON** or **OFF**:
+  - *If ON*: Users see "Confirmation Email Sent" state and must click the verification link before logging in.
+  - *If OFF*: Users are immediately logged into their workspace upon registration.
+- [ ] **Custom SMTP Provider**: Strongly recommended (SendGrid, Resend, AWS SES) for production. The default Supabase built-in mailer enforces a strict platform rate-limit of 30 emails/hour.
+- [ ] **Password Minimum Requirements**: Set minimum length to **8 characters**. The client-side password strength checker enforces $\ge 8$ chars, letters, and numbers.
+
+### User-Enumeration Tradeoff (`AUTH_DETAILED_ERRORS`)
+
+By default, Supabase returns a generic `invalid_credentials` error on failed logins to prevent attackers from determining whether an email address exists in the system.
+
+- When `AUTH_DETAILED_ERRORS=true` (default): `POST /auth/precheck` performs a rate-limited administrative check to distinguish *"Email not registered"* from *"Wrong password"*, providing clearer UX.
+- When `AUTH_DETAILED_ERRORS=false`: The app strictly suppresses email existence indicators, returning a single generic *"Invalid email or password"* error.
+

@@ -217,7 +217,17 @@ export function GeminiSidebar() {
   }, [runs, searchQuery]);
 
   // Hide sidebar on public marketing landing page, legal, and auth pages
-  if (pathname === "/" || pathname === "/privacy" || pathname === "/terms" || pathname?.startsWith("/auth")) {
+  if (
+    !user ||
+    pathname === "/" ||
+    pathname === "/privacy" ||
+    pathname === "/terms" ||
+    pathname === "/sign-in" ||
+    pathname === "/sign-up" ||
+    pathname === "/forgot-password" ||
+    pathname === "/reset-password" ||
+    pathname?.startsWith("/auth")
+  ) {
     return null;
   }
 

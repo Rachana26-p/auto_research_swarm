@@ -23,12 +23,12 @@ class APIModel(BaseModel):
 
 class RunCreateRequest(APIModel):
     goal: str = Field(..., min_length=1, max_length=5000, description="Research goal")
-    max_pages: int = Field(default=20, ge=1, le=100)
-    max_tool_calls: Optional[int] = Field(default=None, ge=1, le=1000)
-    max_tokens: int = Field(default=500000, ge=1000, le=2000000)
+    max_pages: int = Field(default=5, ge=1, le=100)
+    max_tool_calls: Optional[int] = Field(default=10, ge=1, le=1000)
+    max_tokens: int = Field(default=200000, ge=1000, le=2000000)
     max_wall_seconds: float = Field(default=1800.0, ge=10.0, le=7200.0)
-    provider: Optional[str] = Field(default="gemini", description="LLM provider: gemini or groq")
-    model: Optional[str] = Field(default="gemini-1.5-flash", description="Model name")
+    provider: Optional[str] = Field(default="groq", description="LLM provider: groq or gemini")
+    model: Optional[str] = Field(default="qwen/qwen3.8-27b", description="Model name")
     user_id: Optional[str] = Field(default=None, description="Isolated user identity ID")
 
 
@@ -50,11 +50,11 @@ class RunResponse(APIModel):
     tokens_used: int = 0
     wall_clock_seconds: float = 0.0
     error_message: Optional[str] = None
-    max_pages: int = 20
-    max_tokens: int = 500000
-    max_tool_calls: int = 200
-    provider: Optional[str] = "gemini"
-    model: Optional[str] = "gemini-1.5-flash"
+    max_pages: int = 5
+    max_tokens: int = 200000
+    max_tool_calls: int = 10
+    provider: Optional[str] = "groq"
+    model: Optional[str] = "qwen/qwen3.8-27b"
     user_id: Optional[str] = None
 
 

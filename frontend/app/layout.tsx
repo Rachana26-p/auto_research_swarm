@@ -32,6 +32,7 @@ import {
   CookieConsent,
   GeminiSidebar,
   Navbar,
+  OutageBanner,
   ScrollProgressBar,
   ThemeProvider,
   UtmTracker,
@@ -86,6 +87,9 @@ export default function RootLayout({
         <UtmTracker />
 
         <ThemeProvider>
+          {/* Global Database Outage Banner (WS0 Resilience) */}
+          <OutageBanner />
+
           {/* Top Navigation Bar */}
           <Suspense fallback={<div className="h-16 border-b-2 border-[#0A0A0A] dark:border-[#2C3142] bg-[#FAFAFA] dark:bg-[#101217]" />}>
             <Navbar />

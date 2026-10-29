@@ -30,6 +30,7 @@ import logging
 import time
 from typing import Any, Callable, Dict, List, Optional
 from uuid import UUID, uuid4
+from pathlib import Path
 
 import httpx
 from pydantic import ValidationError
@@ -82,27 +83,24 @@ class NodeConfig:
 
 def calculate_dynamic_tool_budget(max_pages: int, max_tokens: int) -> int:
     """
-    Dynamically computes a realistic tool call budget instead of an arbitrary 200 limit.
-    Formula: ~5-6 calls per target page (discovery, extraction, validation, writing/embedding)
-    plus 10 base calls for initial planning & subtask decomposition.
+    Dynamically computes a realistic tool call budget for MVP / free-tier mode.
+    Defaults to 10 tool calls to preserve rate limits on free-tier keys.
     """
-    page_budget = (max_pages * 5) + 10
-    token_budget = max(15, max_tokens // 2500)
-    return max(20, min(page_budget, token_budget))
+    return 10
 
 
 @dataclass
 class BudgetConfig:
-    max_pages: int = 20
-    max_tool_calls: int | None = None
-    max_tokens: int = 500_000
+    max_pages: int = 5
+    max_tool_calls: int | None = 10
+    max_tokens: int = 200_000
     max_wall_seconds: float = 1800.0
     budget_warn_fraction: float = 0.8
     budget_warning_fired: bool = False
 
     def __post_init__(self) -> None:
         if self.max_tool_calls is None or self.max_tool_calls <= 0:
-            self.max_tool_calls = calculate_dynamic_tool_budget(self.max_pages, self.max_tokens)
+            self.max_tool_calls = 10
 
 
 DEFAULT_NODE_CONFIGS: dict[str, NodeConfig] = {
@@ -119,6 +117,7 @@ class InterruptReason(str, Enum):
     BUDGET_WARNING    = "budget_warning"
     GUARDRAIL_REJECT  = "guardrail_reject"
     QUOTA_EXHAUSTED   = "quota_exhausted"
+    INFRA_DOWN        = "infra_down"
 
 
 class SupervisorInterrupt(Exception):
@@ -328,13 +327,21 @@ async def _upsert_page_to_supabase(
         "Content-Type": "application/json",
         "Prefer": "resolution=merge-duplicates",
     }
+    v_status = validation_status.lower()
+    if v_status in ("fail", "failed"):
+        v_status = "failed"
+    elif v_status in ("pass", "passed"):
+        v_status = "passed"
+    elif v_status not in ("pending", "uncertain"):
+        v_status = "uncertain"
+
     payload = {
         "id": str(page_id),
         "run_id": str(run_id),
         "url": str(url),
         "extracted_json": safe_extracted,
         "markdown_path": markdown_path,
-        "validation_status": validation_status.lower(),
+        "validation_status": v_status,
         "validation_reasoning": validation_reasoning,
         "updated_at": datetime.utcnow().isoformat(),
     }
@@ -557,6 +564,8 @@ class SupervisorOrchestrator:
         max_urls_per_subtask: int = 5,
         resume_checkpoint: dict[str, Any] | None = None,
         human_decision: str = "approve",
+        target_min_pages: int | None = None,
+        non_blocking_review: bool = False,
     ) -> dict[str, Any]:
         """
         Runs the orchestration loop across all nodes.
@@ -667,12 +676,25 @@ class SupervisorOrchestrator:
 
         # Step 2: Loop Subtasks -> Discovery
         for subtask in subtasks:
+            if budget.pages_processed >= budget.max_pages or budget.tool_calls_made >= budget.max_tool_calls:
+                if len(summary.get("pages_written", [])) > 0:
+                    logger.info("Budget limit reached (%d pages, %d tool calls) with %d written articles; completing gracefully",
+                                budget.pages_processed, budget.max_tool_calls, len(summary["pages_written"]))
+                    break
+
             subtask_obj = subtask if isinstance(subtask, Subtask) else Subtask.model_validate(subtask)
             subtask_id   = subtask_obj.subtask_id
             description  = subtask_obj.description
             cand_domains = subtask_obj.candidate_domains
 
-            budget.check_hard_limits(summary)
+            try:
+                budget.check_hard_limits(summary)
+            except BudgetExceeded as b_exc:
+                if len(summary.get("pages_written", [])) > 0:
+                    logger.info("Budget reached with %d articles written; completing gracefully: %s", len(summary["pages_written"]), b_exc)
+                    break
+                raise
+
             if budget.check_warn_threshold(summary):
                 summary["budget_warning_fired"] = True
                 raise SupervisorInterrupt(
@@ -685,7 +707,7 @@ class SupervisorOrchestrator:
                 subtask_id=subtask_id,
                 description=description,
                 candidate_domains=cand_domains,
-                max_urls=max_urls_per_subtask,
+                max_urls=min(3, max_urls_per_subtask),
             )
             disc_result = await self._run_node(
                 "discovery", fns["discovery"],
@@ -701,6 +723,11 @@ class SupervisorOrchestrator:
 
             # Step 3: For each URL -> Extractor -> Validator -> Writer / Discard / Interrupt
             for url_item in urls:
+                if budget.pages_processed >= budget.max_pages or budget.tool_calls_made >= budget.max_tool_calls:
+                    if len(summary.get("pages_written", [])) > 0:
+                        logger.info("Budget limit reached with %d written articles; completing gracefully", len(summary["pages_written"]))
+                        break
+
                 ranked_url = url_item if isinstance(url_item, RankedUrl) else RankedUrl.model_validate(url_item)
                 url = ranked_url.url
                 if not url or url in processed_urls:
@@ -710,7 +737,14 @@ class SupervisorOrchestrator:
                 page_id = uuid4()
                 budget.record_page()
                 summary["pages_processed"] = budget.pages_processed
-                budget.check_hard_limits(summary)
+
+                try:
+                    budget.check_hard_limits(summary)
+                except BudgetExceeded as b_exc:
+                    if len(summary.get("pages_written", [])) > 0:
+                        logger.info("Budget reached with %d articles written; completing gracefully: %s", len(summary["pages_written"]), b_exc)
+                        break
+                    raise
 
                 if budget.check_warn_threshold(summary):
                     summary["budget_warning_fired"] = True
@@ -795,7 +829,7 @@ class SupervisorOrchestrator:
                     validation_reasoning=val_dict.get("faithfulness_notes"),
                 )
 
-                # Conditional Edge: UNCERTAIN -> interrupt()
+                # Conditional Edge: UNCERTAIN -> interrupt() or non-blocking review queue
                 if route == "interrupt":
                     candidate_paper = {
                         "url": url,
@@ -807,6 +841,13 @@ class SupervisorOrchestrator:
                         "validator_output": val_dict,
                     }
                     summary["pages_uncertain"].append(candidate_paper)
+                    if non_blocking_review:
+                        logger.info(
+                            "Non-blocking review: routed UNCERTAIN page %s to chat review queue without interruption",
+                            url,
+                        )
+                        continue
+
                     await self._do_checkpoint(
                         config=config,
                         run_id=run_id,
@@ -872,6 +913,155 @@ class SupervisorOrchestrator:
                 except RuntimeError as exc:
                     summary["errors"].append({"url": url, "stage": "writer", "error": str(exc)})
                     summary["pages_failed"] += 1
+
+        # Step 4: Coverage Loop — Target >= min_pass_target PASS sources (default 12 when requested)
+        if target_min_pages is not None and target_min_pages > 0:
+            coverage_round = 0
+            max_coverage_rounds = 2
+            while (
+                summary["pages_passed"] < target_min_pages
+                and coverage_round < max_coverage_rounds
+                and budget.tool_calls_made + 5 < budget.max_tool_calls
+                and budget.elapsed_seconds() + 30.0 < budget.max_wall_seconds
+            ):
+                coverage_round += 1
+                logger.info(
+                    "Coverage loop round %d/%d: current passed %d, target %d",
+                    coverage_round,
+                    max_coverage_rounds,
+                    summary["pages_passed"],
+                    target_min_pages,
+                )
+                refined_subtask_id = f"coverage_subtask_{coverage_round}"
+                refined_desc = f"{goal} comprehensive survey benchmark empirical evaluation round {coverage_round}"
+                cov_disc_input = DiscoveryInput(
+                    run_id=run_id,
+                    subtask_id=refined_subtask_id,
+                    description=refined_desc,
+                    candidate_domains=[],
+                    max_urls=max_urls_per_subtask,
+                    enable_academic=True,
+                )
+                try:
+                    disc_result = await self._run_node(
+                        "discovery", fns["discovery"],
+                        cov_disc_input.model_dump(),
+                        budget, config, run_id,
+                    )
+                    valid_d_keys = {"run_id", "subtask_id", "urls", "tool_calls", "tokens_used"}
+                    discovery_output = (
+                        disc_result if isinstance(disc_result, DiscoveryOutput)
+                        else DiscoveryOutput.model_validate({k: v for k, v in disc_result.items() if k in valid_d_keys})
+                    )
+                    cov_urls = discovery_output.urls
+                except Exception as d_exc:
+                    logger.warning("Discovery failed in coverage loop round %d: %s", coverage_round, d_exc)
+                    break
+
+                for url_item in cov_urls:
+                    if summary["pages_passed"] >= target_min_pages:
+                        break
+                    ranked_url = url_item if isinstance(url_item, RankedUrl) else RankedUrl.model_validate(url_item)
+                    c_url = ranked_url.url
+                    if not c_url or c_url in processed_urls:
+                        continue
+                    processed_urls.add(c_url)
+
+                    c_page_id = uuid4()
+                    budget.record_page()
+                    summary["pages_processed"] = budget.pages_processed
+
+                    # Extractor
+                    ext_input = ExtractorInput(run_id=run_id, page_id=c_page_id, url=c_url)
+                    try:
+                        ext_res = await self._run_node(
+                            "extractor", fns["extractor"],
+                            ext_input.model_dump(),
+                            budget, config, run_id,
+                        )
+                    except Exception as exc:
+                        summary["errors"].append({"url": c_url, "stage": "coverage_extractor", "error": str(exc)})
+                        summary["pages_failed"] += 1
+                        continue
+
+                    valid_e_keys = {"extracted_page", "extracted_json", "source_content", "tool_calls"}
+                    ext_out = (
+                        ext_res if isinstance(ext_res, ExtractorOutput)
+                        else ExtractorOutput.model_validate({k: v for k, v in ext_res.items() if k in valid_e_keys})
+                    )
+                    c_ep: ExtractedPage = ext_out.extracted_page
+                    c_source_content: str = ext_out.source_content
+
+                    # Validator
+                    val_input = ValidatorInput(
+                        run_id=run_id,
+                        page_id=c_page_id,
+                        url=c_url,
+                        extracted_content=c_ep,
+                        source_content=c_source_content,
+                        subtask_description=refined_desc,
+                    )
+                    try:
+                        val_res = await self._run_node(
+                            "validator", fns["validator"],
+                            val_input.model_dump(),
+                            budget, config, run_id,
+                        )
+                    except Exception as exc:
+                        logger.warning("Coverage validation failed for %s: %s", c_url, exc)
+                        continue
+
+                    v_results = val_res.get("validation_results", {})
+                    v_data = v_results.get(str(c_page_id), {})
+                    valid_v_keys = {"run_id", "page_id", "verdict", "confidence", "faithfulness_notes", "relevance_notes", "safety_flags", "validation_status", "validation_reasoning", "tool_calls"}
+                    v_out = (
+                        v_data if isinstance(v_data, ValidatorOutput)
+                        else ValidatorOutput.model_validate({k: v for k, v in v_data.items() if k in valid_v_keys})
+                    )
+                    v_dict = v_out.model_dump(mode="json")
+                    c_route = _route_validator_output(v_dict)
+
+                    if c_route in ("pass", "writer"):
+                        w_input = WriterInput(
+                            run_id=run_id,
+                            page_id=c_page_id,
+                            source_url=c_url,
+                            extracted_content=c_ep,
+                            validation_result=v_out,
+                        )
+                        try:
+                            w_res = await self._run_node(
+                                "writer", fns["writer"],
+                                w_input.model_dump(),
+                                budget, config, run_id,
+                            )
+                            valid_w_keys = {"run_id", "page_id", "markdown_path", "supabase_page_row_id", "embedding_generated", "embedding_ids", "tool_calls"}
+                            w_out = (
+                                w_res if isinstance(w_res, WriterOutput)
+                                else WriterOutput.model_validate({k: v for k, v in w_res.items() if k in valid_w_keys})
+                            )
+                            summary["pages_passed"] += 1
+                            summary["pages_written"].append({
+                                "url": c_url,
+                                "page_id": str(c_page_id),
+                                "markdown_path": w_out.markdown_path,
+                            })
+                        except Exception as exc:
+                            summary["errors"].append({"url": c_url, "stage": "coverage_writer", "error": str(exc)})
+                            summary["pages_failed"] += 1
+                    elif c_route == "interrupt":
+                        candidate_paper = {
+                            "url": c_url,
+                            "page_id": str(c_page_id),
+                            "title": c_ep.title,
+                            "summary": getattr(c_ep, "description", "") or getattr(c_ep, "summary", ""),
+                            "headings": c_ep.headings,
+                            "extracted_json": c_ep.model_dump(),
+                            "validator_output": v_dict,
+                        }
+                        summary["pages_uncertain"].append(candidate_paper)
+                    else:
+                        summary["pages_failed"] += 1
 
         # Automatic LaTeX Research Survey Synthesis (Overleaf-ready)
         try:
@@ -1053,8 +1243,11 @@ def run_supervisor_sync(
     ))
 
 
+Supervisor = SupervisorOrchestrator
+
 __all__ = [
     "SupervisorOrchestrator",
+    "Supervisor",
     "SupervisorInterrupt",
     "BudgetExceeded",
     "InterruptReason",

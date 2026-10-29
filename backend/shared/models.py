@@ -22,10 +22,16 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator, model_valida
 # ============================================================
 
 class RunStatus(str, Enum):
+    DRAFT = "draft"
+    QUEUED = "queued"
     PENDING = "pending"
     RUNNING = "running"
+    PAUSED_INFRA = "paused_infra"
+    PAUSED_QUOTA = "paused_quota"
     COMPLETED = "completed"
+    COMPLETED_PARTIAL = "completed_partial"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class ValidationStatus(str, Enum):
@@ -63,6 +69,7 @@ class AgentName(str, Enum):
     EXTRACTOR = "extractor"
     VALIDATOR = "validator"
     WRITER = "writer"
+    PAPER_COMPOSER = "paper_composer"
 
 
 # ============================================================
@@ -250,6 +257,14 @@ class RankedUrl(BaseSchema):
     url: str = Field(min_length=1)
     relevance_score: float = Field(ge=0.0, le=1.0)
     domain: str = Field(min_length=1)
+    source_type: str = "web"
+    doi: str | None = None
+    arxiv_id: str | None = None
+    title: str | None = None
+    authors: list[str] = Field(default_factory=list)
+    year: int | None = None
+    venue: str | None = None
+    abstract: str | None = None
 
 
 class DiscoveryInput(BaseSchema):
@@ -259,6 +274,7 @@ class DiscoveryInput(BaseSchema):
     description: str = Field(min_length=1)
     candidate_domains: list[str] = Field(default_factory=list)
     max_urls: int = Field(default=10, ge=1)
+    enable_academic: bool = False
     provider: str | None = None
     model: str | None = None
 
@@ -565,7 +581,7 @@ def load_config() -> AppConfig:
         groq_api_key=os.getenv("GROQ_API_KEY", ""),
         groq_model=os.getenv("GROQ_MODEL", ""),
         google_api_key=os.getenv("GOOGLE_API_KEY", ""),
-        gemini_model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
+        gemini_model=os.getenv("GEMINI_MODEL", "gemma-4-26b-a4b-it"),
         gemini_embedding_model=os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001"),
         openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
         openrouter_base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
@@ -588,6 +604,170 @@ def load_config() -> AppConfig:
         api_key=os.getenv("API_KEY", "test-api-key"),
         frontend_url=os.getenv("FRONTEND_URL", "http://localhost:3000"),
     )
+
+
+# ============================================================
+# CHAT, SOURCE, PAPER & USAGE MODELS (WS2)
+# ============================================================
+
+class ChatParams(BaseSchema):
+    max_sources: int = 5
+    max_pages: int = 5
+    max_tool_calls: int = 10
+    token_budget: int = 200_000
+    year_range: list[int] = Field(default_factory=lambda: [2018, 2026])
+    source_types: list[str] = Field(default_factory=lambda: ["paper", "web", "doc"])
+    min_pages: int = 1
+
+
+class ChatCreate(BaseSchema):
+    title: str = "New Research Project"
+    query: str
+    params: ChatParams = Field(default_factory=ChatParams)
+
+
+class ChatUpdate(BaseSchema):
+    title: str | None = None
+    status: RunStatus | None = None
+    current_stage: str | None = None
+
+
+class ChatResponse(BaseSchema):
+    id: UUID
+    user_id: UUID
+    title: str
+    query: str
+    params: ChatParams
+    status: RunStatus
+    current_stage: str
+    created_at: datetime
+    updated_at: datetime
+    last_opened_at: datetime
+
+
+class SourceRecord(BaseSchema):
+    id: UUID
+    chat_id: UUID
+    user_id: UUID
+    canonical_id: str = Field(default_factory=lambda: str(uuid4()))
+    title: str
+    authors: list[str] = Field(default_factory=list)
+    venue: str = ""
+    year: int | None = None
+    url: str = ""
+    doi: str | None = None
+    arxiv_id: str | None = None
+    source_type: Literal["arxiv", "crossref", "openalex", "tavily", "web", "pdf"] = "web"
+    evidence_level: Literal["full_text", "abstract_only"] = "full_text"
+    content_hash: str = Field(default_factory=lambda: "hash")
+    extracted: dict[str, Any] = Field(default_factory=dict)
+    verdict: Literal["pass", "fail", "uncertain"] = "pass"
+    confidence: float = 1.0
+    relevance_score: float = 1.0
+    safety_flags: list[str] = Field(default_factory=list)
+    markdown: str = ""
+    bib_key: str | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class PaperRecord(BaseSchema):
+    id: UUID
+    chat_id: UUID
+    user_id: UUID
+    title: str = "Research Survey Paper"
+    status: Literal["draft", "compiled", "compile_failed", "short_of_target"] = "draft"
+    current_version: int = 1
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class PaperVersionRecord(BaseSchema):
+    id: UUID
+    paper_id: UUID
+    chat_id: UUID
+    user_id: UUID
+    version: int
+    tex_source: str = ""
+    bib_source: str = ""
+    created_by: Literal["agent", "user"] = "agent"
+    compile_status: Literal["pending", "success", "failed"] = "pending"
+    page_count: int = 0
+    storage_path: str | None = None
+    compile_errors: list[dict[str, Any]] = Field(default_factory=list)
+    note: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ModelUsageRecord(BaseSchema):
+    id: UUID = Field(default_factory=uuid4)
+    user_id: UUID | None = None
+    chat_id: UUID | None = None
+    run_id: UUID | None = None
+    provider: str
+    model: str
+    role: Literal["planner", "discovery", "extractor", "validator", "writer", "paper_composer", "router"]
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    latency_ms: float = 0.0
+    outcome: Literal["success", "rate_limited", "timeout", "error"] = "success"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class PaperComposerInput(BaseSchema):
+    chat_id: UUID
+    user_id: UUID
+    topic: str
+    sources: list[SourceRecord] = Field(default_factory=list)
+    target_pages: int = 5
+    version: int = 1
+    style: str = "IEEEtran"
+
+
+class PaperComposerOutput(BaseSchema):
+    paper_id: UUID
+    chat_id: UUID
+    version: int
+    title: str
+    tex_source: str
+    bib_source: str
+    cited_keys: list[str] = Field(default_factory=list)
+    grounding_score: float = 1.0
+    sections: list[str] = Field(default_factory=list)
+    word_count: int = 0
+    estimated_pages: float = 0.0
+    validation_passed: bool = True
+    warnings: list[str] = Field(default_factory=list)
+
+
+class PaperGenerateRequest(BaseSchema):
+    target_pages: int = 5
+    style: str = "IEEEtran"
+
+
+class PaperUpdateRequest(BaseSchema):
+    tex_source: str
+    bib_source: str = ""
+    expected_version: int | None = None
+    note: str = ""
+    compile_now: bool = False
+
+
+class CompileError(BaseSchema):
+    file: str = "main.tex"
+    line: int | None = None
+    error_type: str = ""
+    message: str = ""
+    snippet: str = ""
+
+
+class CompileResult(BaseSchema):
+    success: bool
+    compile_status: Literal["pending", "success", "failed", "tool_unavailable"] = "pending"
+    page_count: int = 0
+    pdf_bytes: bytes | None = None
+    errors: list[CompileError] = Field(default_factory=list)
+    log: str = ""
 
 
 __all__ = [
@@ -650,4 +830,19 @@ __all__ = [
     # Config
     "AppConfig",
     "load_config",
+    # Chat & Paper Models (WS2/WS5)
+    "ChatRecord",
+    "ChatCreate",
+    "ChatUpdate",
+    "ChatResponse",
+    "SourceRecord",
+    "PaperRecord",
+    "PaperVersionRecord",
+    "ModelUsageRecord",
+    "PaperComposerInput",
+    "PaperComposerOutput",
+    "PaperGenerateRequest",
+    "PaperUpdateRequest",
+    "CompileError",
+    "CompileResult",
 ]

@@ -4,6 +4,7 @@ export { AgentCard } from "./AgentCard";
 export { RunTimeline } from "./RunTimeline";
 export { KnowledgeFileCard } from "./KnowledgeFileCard";
 export { TexEditor } from "./TexEditor";
+export { SplitPaneLatexStudio } from "./SplitPaneLatexStudio";
 export { CookieConsent } from "./CookieConsent";
 export { GeminiSidebar } from "./GeminiSidebar";
 export { Navbar } from "./Navbar";
@@ -13,6 +14,7 @@ export { CopyButton } from "./CopyButton";
 export { ConfirmationModal } from "./ConfirmationModal";
 export { AlertBanner } from "./AlertBanner";
 export { PasswordInput } from "./PasswordInput";
+export { OutageBanner } from "./OutageBanner";
 export { UtmTracker } from "./UtmTracker";
 export {
   SunIcon,

@@ -20,21 +20,21 @@ export default function DashboardPage() {
   // Prompt & Form State
   const [goal, setGoal] = useState("");
   const [depthTier, setDepthTier] = useState<"light" | "standard" | "deep">("standard");
-  const [modelProvider, setModelProvider] = useState<"gemini" | "groq">("gemini");
-  const [modelName, setModelName] = useState("gemini-1.5-flash");
+  const [modelProvider, setModelProvider] = useState<"gemini" | "groq">("groq");
+  const [modelName, setModelName] = useState("qwen/qwen3.8-27b");
   const [honeypot, setHoneypot] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
-  // Depth tier mapped to pages & tokens
+  // Depth tier mapped to pages & tokens (capped to 5 pages for MVP)
   const depthConfig = {
-    light: { pages: 10, tokens: 250000 },
-    standard: { pages: 20, tokens: 500000 },
-    deep: { pages: 35, tokens: 800000 },
+    light: { pages: 3, tokens: 50000 },
+    standard: { pages: 5, tokens: 100000 },
+    deep: { pages: 5, tokens: 150000 },
   }[depthTier];
 
-  // Dynamic budget calculation: ~5 calls per page + 10 base planning calls
-  const dynamicBudget = Math.max(20, depthConfig.pages * 5 + 10);
+  // Dynamic budget calculation: capped to 10 tool calls for MVP mode
+  const dynamicBudget = 10;
 
   // Runs List State
   const [runs, setRuns] = useState<RunSummaryResponse[]>([]);

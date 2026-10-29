@@ -676,6 +676,61 @@ def sanitize_filename(url: str, max_len: int = 100) -> str:
     return f"{safe}.md"
 
 
+def extract_pdf_content(
+    pdf_bytes: bytes,
+    max_pages: int = 50,
+    max_size_bytes: int = 10 * 1024 * 1024,
+) -> tuple[str, str | None, list[str]]:
+    """
+    Sandboxed PDF text extractor enforcing 10MB file cap and 50 page limit.
+    Returns (extracted_text, title, headings).
+    """
+    if len(pdf_bytes) > max_size_bytes:
+        raise ValueError(
+            f"PDF file size {len(pdf_bytes)} bytes exceeds 10MB limit ({max_size_bytes} bytes)"
+        )
+
+    try:
+        import io
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        total_pages = len(reader.pages)
+        pages_to_read = min(total_pages, max_pages)
+
+        extracted_parts: list[str] = []
+        headings: list[str] = []
+
+        meta = reader.metadata or {}
+        doc_title = meta.title if getattr(meta, "title", None) else None
+
+        for idx in range(pages_to_read):
+            page = reader.pages[idx]
+            page_text = page.extract_text() or ""
+            if page_text.strip():
+                extracted_parts.append(f"--- Page {idx + 1} ---\n{page_text.strip()}")
+
+        try:
+            outline = getattr(reader, "outline", None)
+            if outline:
+                for item in outline:
+                    if hasattr(item, "title") and item.title:
+                        headings.append(str(item.title).strip())
+        except Exception:
+            pass
+
+        if not headings:
+            headings = [f"Section Page {i+1}" for i in range(min(5, max(1, pages_to_read)))]
+
+        full_text = "\n\n".join(extracted_parts)
+        return full_text, doc_title, headings
+    except ValueError:
+        raise
+    except Exception as exc:
+        logger.warning("PDF extraction failed: %s", exc)
+        raise ValueError(f"Failed to parse PDF document: {exc}") from exc
+
+
 # ============================================================
 # LANGGRAPH NODE
 # ============================================================
@@ -781,7 +836,17 @@ async def extractor_node(state: dict[str, Any]) -> dict[str, Any]:
                             clean_fetch_url,
                             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AutoResearchSwarm/1.0"},
                         )
-                        page_content = strip_html_tags(resp.text)
+                        # Detect if content is PDF
+                        if resp.content.startswith(b"%PDF") or clean_fetch_url.lower().endswith(".pdf"):
+                            try:
+                                pdf_text, pdf_title, _ = extract_pdf_content(resp.content)
+                                page_content = pdf_text
+                                page_title = pdf_title
+                            except Exception as pdf_exc:
+                                logger.warning("PDF extraction failed for %s: %s", clean_fetch_url, pdf_exc)
+                                page_content = strip_html_tags(resp.text)
+                        else:
+                            page_content = strip_html_tags(resp.text)
                         page_title = None
                 except Exception as net_err:
                     logger.warning("Direct HTTP fetch failed for %s: %s; using inert structural content", clean_fetch_url, net_err)
@@ -937,4 +1002,5 @@ __all__ = [
     "ExtractedMetadata",
     "ToolExecutionError",
     "validate_url_and_egress",
+    "extract_pdf_content",
 ]

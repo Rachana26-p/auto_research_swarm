@@ -77,9 +77,10 @@ export function Navbar() {
     await supabase.auth.signOut();
     if (typeof window !== "undefined") {
       localStorage.removeItem("swarm_user_name");
+      localStorage.removeItem("swarm_current_chat_id");
     }
     setUser(null);
-    router.push("/auth/login");
+    router.push("/sign-in");
     router.refresh();
   };
 
@@ -108,6 +109,16 @@ export function Navbar() {
             }`}
           >
             Dashboard
+          </Link>
+          <Link
+            href="/chats"
+            className={`pb-1 border-b-2 transition-colors ${
+              pathname?.startsWith("/chats")
+                ? "border-[#E63946] text-[#E63946] dark:text-[#FF5C6C] dark:border-[#FF5C6C]"
+                : "border-transparent text-[#0A0A0A] dark:text-[#EDEEF2] hover:border-[#E63946] hover:text-[#E63946] dark:hover:text-[#FF5C6C]"
+            }`}
+          >
+            Chats // Paper Studio
           </Link>
           <Link
             href="/reviews"
@@ -176,7 +187,7 @@ export function Navbar() {
             </div>
           ) : (
             <Link
-              href="/auth/login"
+              href="/sign-in"
               className="px-3.5 py-1.5 bg-[#0A0A0A] dark:bg-[#EDEEF2] text-[#FAFAFA] dark:text-[#0A0A0A] border border-[#0A0A0A] dark:border-[#EDEEF2] hover:bg-[#E63946] dark:hover:bg-[#FF5C6C] dark:hover:text-[#FAFAFA] transition-colors shadow-[2px_2px_0px_0px_#0A0A0A] dark:shadow-none ml-2"
             >
               Sign In

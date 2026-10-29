@@ -7,6 +7,7 @@ from .egress import (
     validate_url_and_egress,
     check_ssrf_hostname,
     is_ip_blocked,
+    ACADEMIC_EGRESS_ALLOWLIST,
 )
 from .content_delimiters import (
     delimit_untrusted_content,
@@ -29,6 +30,7 @@ __all__ = [
     "validate_url_and_egress",
     "check_ssrf_hostname",
     "is_ip_blocked",
+    "ACADEMIC_EGRESS_ALLOWLIST",
     # Delimiters & Injection scanning
     "delimit_untrusted_content",
     "format_extraction_user_prompt",

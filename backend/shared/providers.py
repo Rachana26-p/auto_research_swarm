@@ -495,8 +495,86 @@ class DeterministicFallbackEmbeddingProvider(EmbeddingProvider):
 # FACTORY FUNCTIONS
 # ============================================================
 
+class RoutedLLMProvider(LLMProvider):
+    """Delegates completions to the FreeModelRouter with automatic multi-provider failover."""
+
+    def __init__(self, role: str):
+        self.role = role
+
+    async def complete_json(
+        self,
+        messages: list[dict[str, str]],
+        system_prompt: str | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.1,
+    ) -> tuple[dict[str, Any], int]:
+        import json
+        from llm.router import router as llm_router
+        msgs = list(messages)
+        if system_prompt:
+            msgs = [{"role": "system", "content": system_prompt}] + msgs
+        res, _ = await llm_router.complete(
+            role=self.role,
+            messages=msgs,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        if isinstance(res, dict):
+            return res, 150
+        if isinstance(res, str):
+            try:
+                parsed = json.loads(res)
+                if isinstance(parsed, dict):
+                    return parsed, 150
+            except Exception:
+                pass
+            return {"content": res}, 150
+        return {"content": str(res)}, 150
+
+    async def complete_text(
+        self,
+        messages: list[dict[str, str]],
+        system_prompt: str | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.1,
+    ) -> tuple[str, int]:
+        from llm.router import router as llm_router
+        msgs = list(messages)
+        if system_prompt:
+            msgs = [{"role": "system", "content": system_prompt}] + msgs
+        res, _ = await llm_router.complete(
+            role=self.role,
+            messages=msgs,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return str(res), 150
+
+    async def complete(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 0.2,
+        max_tokens: int = 4000,
+        response_model: type | None = None,
+        **kwargs: Any,
+    ) -> str:
+        from llm.router import router as llm_router
+        from pydantic import BaseModel
+        result, provider_model = await llm_router.complete(
+            role=self.role,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_model=response_model,
+            **kwargs,
+        )
+        if isinstance(result, BaseModel):
+            return result.model_dump_json()
+        return str(result)
+
+
 def get_llm_provider(
-    role: str = "reasoning",
+    role: str = "general",
     config: AppConfig | None = None,
     provider: str | None = None,
     model: str | None = None,
@@ -504,7 +582,7 @@ def get_llm_provider(
     """
     Factory returning configured LLMProvider based on role, user selection, and environment.
     If provider and model are explicitly provided, honours that choice.
-    Otherwise defaults to Groq free tier -> Gemini -> offline deterministic fallback.
+    Otherwise routes through the FreeModelRouter pool.
     """
     cfg = config or get_config()
     req_provider = (provider or "").strip().lower()
@@ -527,14 +605,18 @@ def get_llm_provider(
             )
         logger.warning("Groq requested but GROQ_API_KEY not configured, falling back to available provider")
 
-    # Default heuristic: Groq Free Tier (Planner & Validator priority)
+    # 1. Use the Free Model Router pool if pool endpoints are available
+    from llm.router import router as llm_router
+    if llm_router.endpoints:
+        return RoutedLLMProvider(role=role)
+
+    # 2. Direct provider fallbacks if pool not loaded
     if cfg.groq_api_key and cfg.groq_model:
         return GroqProvider(
             api_key=cfg.groq_api_key,
             model=model or cfg.groq_model,
         )
 
-    # 2. Google Gemini Free Tier
     if cfg.google_api_key:
         return GeminiProvider(
             api_key=cfg.google_api_key,

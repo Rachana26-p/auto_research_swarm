@@ -40,6 +40,7 @@ from .models import (  # noqa: F401
     load_config,
 )
 from .config import get_config, validate_mcp_connectivity, ensure_directories  # noqa: F401
+from .db import db_client, DatabaseUnavailableError, CircuitBreaker  # noqa: F401
 
 __all__ = [
     "RunStatus",

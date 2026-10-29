@@ -19,10 +19,13 @@ Security & Guardrails:
 from __future__ import annotations
 
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from api.routes import (
+    auth_router,
+    chats_router,
     guardrails_router,
     knowledge_router,
     latex_router,
@@ -30,6 +33,7 @@ from api.routes import (
     runs_router,
 )
 from shared.config import ensure_directories, get_config
+from shared.db import db_client, DatabaseUnavailableError
 
 
 def create_app() -> FastAPI:
@@ -52,12 +56,45 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Attach routers (all routes enforce API key authentication dependency)
+    # Attach routers (all routes enforce authentication dependencies)
+    app.include_router(auth_router)
+    app.include_router(chats_router)
     app.include_router(runs_router)
     app.include_router(reviews_router)
     app.include_router(knowledge_router)
     app.include_router(guardrails_router)
     app.include_router(latex_router)
+
+    # Database Outage Resilience (WS0)
+    @app.exception_handler(DatabaseUnavailableError)
+    async def database_unavailable_handler(request: Request, exc: DatabaseUnavailableError) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": str(exc.retry_after)},
+            content={
+                "error": {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "retry_after": exc.retry_after,
+                }
+            },
+        )
+
+    @app.get("/health", tags=["health"])
+    async def health_liveness() -> dict[str, str]:
+        """Liveness check: requires zero external dependencies, always returns 200."""
+        return {"status": "healthy", "service": "auto-research-swarm"}
+
+    @app.get("/health/deep", tags=["health"])
+    async def health_deep() -> JSONResponse:
+        """
+        Deep reachability check: probes Supabase DB and Auth with 3s timeout.
+        Returns status with no internal secrets or technical details.
+        """
+        health_data = await db_client.check_deep_health()
+        status_code = 200 if health_data.get("status") == "ok" else 503
+        headers = {"Retry-After": "15"} if status_code == 503 else {}
+        return JSONResponse(status_code=status_code, content=health_data, headers=headers)
 
     return app
 

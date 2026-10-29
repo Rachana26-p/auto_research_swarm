@@ -8,7 +8,7 @@ import asyncio
 import json
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
 from agents.supervisor import BudgetConfig, calculate_dynamic_tool_budget
@@ -25,7 +25,7 @@ def _to_run_response(record: RunRecord) -> RunResponse:
     b = record.budget_config
     computed_tool_calls = (
         (b.max_tool_calls if b and b.max_tool_calls else None)
-        or calculate_dynamic_tool_budget(b.max_pages if b else 20, b.max_tokens if b else 500000)
+        or calculate_dynamic_tool_budget(b.max_pages if b else 5, b.max_tokens if b else 200000)
     )
     return RunResponse(
         id=record.run_id,
@@ -41,8 +41,8 @@ def _to_run_response(record: RunRecord) -> RunResponse:
         tokens_used=s.get("tokens_used", 0),
         wall_clock_seconds=float(s.get("wall_clock_seconds", 0.0)),
         error_message=record.error_message,
-        max_pages=b.max_pages if b else 20,
-        max_tokens=b.max_tokens if b else 500000,
+        max_pages=b.max_pages if b else 5,
+        max_tokens=b.max_tokens if b else 200000,
         max_tool_calls=computed_tool_calls,
         provider=record.provider,
         model=record.model,
@@ -136,30 +136,42 @@ async def redo_run(run_id: UUID) -> RunResponse:
 
 
 @router.get("/{run_id}/events")
-async def stream_run_events(run_id: UUID) -> StreamingResponse:
+async def stream_run_events(run_id: UUID, request: Request) -> StreamingResponse:
     """
     Server-Sent Events (SSE) stream of node transitions and status changes.
+    Supports authenticated reconnection replay with 'Last-Event-ID' header or query param.
     """
     record = run_manager.get_run(run_id)
     if not record:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
 
+    last_event_id = request.headers.get("Last-Event-ID") or request.query_params.get("last_event_id")
+
     async def event_generator():
         queue = record.add_subscriber()
         try:
-            # Yield historical events first
-            for past_event in list(record.events):
-                yield f"data: {json.dumps(past_event)}\n\n"
+            # Yield historical events (skipping events up to last_event_id if reconnecting)
+            yielding = last_event_id is None
+            for idx, past_event in enumerate(list(record.events)):
+                eid = str(past_event.get("event_id") or f"{run_id}_{idx}")
+                if not yielding:
+                    if eid == last_event_id:
+                        yielding = True
+                    continue
+                yield f"id: {eid}\ndata: {json.dumps(past_event)}\n\n"
 
             # If already terminal, close stream
             if record.status in ("completed", "failed"):
                 return
 
+            event_counter = len(record.events)
             # Listen for new events
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=15.0)
-                    yield f"data: {json.dumps(event)}\n\n"
+                    event_counter += 1
+                    eid = str(event.get("event_id") or f"{run_id}_{event_counter}")
+                    yield f"id: {eid}\ndata: {json.dumps(event)}\n\n"
                     if event.get("event_type") in ("run_completed", "run_failed"):
                         break
                 except asyncio.TimeoutError:

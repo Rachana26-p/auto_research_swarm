@@ -423,19 +423,45 @@ class RunManager:
             record.summary.update(interrupt_state)
             await _update_run_in_supabase(record.config, record.run_id, "interrupted", record.summary)
 
-            if interrupt.reason == InterruptReason.QUOTA_EXHAUSTED:
-                record.status = "failed"
-                record.completed_at = datetime.utcnow()
-                record.error_message = f"Free-tier quota exhausted: {interrupt_state.get('error', 'Rate limit exceeded')}"
+            if interrupt.reason == InterruptReason.INFRA_DOWN:
+                record.status = "paused_infra"
+                record.error_message = "Database connection lost (paused_infra). Waiting for database recovery to resume."
                 record.emit_event(
-                    "run_failed",
+                    "run_paused_infra",
                     {
-                        "reason": "quota_exhausted",
-                        "error": record.error_message,
+                        "reason": "infra_down",
+                        "message": record.error_message,
                         "details": interrupt_state,
                     },
                 )
-                await _update_run_in_supabase(record.config, record.run_id, "failed", record.summary)
+                asyncio.create_task(self._auto_resume_infra_loop(record, orchestrator, interrupt_state))
+            elif interrupt.reason == InterruptReason.QUOTA_EXHAUSTED:
+                pages_written = record.summary.get("pages_written", []) or record.summary.get("pages_persisted", 0)
+                if pages_written:
+                    record.status = "completed"
+                    record.completed_at = datetime.utcnow()
+                    record.error_message = None
+                    record.emit_event(
+                        "run_completed",
+                        {
+                            "summary": record.summary,
+                            "note": f"Completed with {len(pages_written) if isinstance(pages_written, list) else pages_written} article(s) written.",
+                        },
+                    )
+                    await _update_run_in_supabase(record.config, record.run_id, "completed", record.summary)
+                else:
+                    record.status = "failed"
+                    record.completed_at = datetime.utcnow()
+                    record.error_message = f"Free-tier quota exhausted: {interrupt_state.get('error', 'Rate limit exceeded')}"
+                    record.emit_event(
+                        "run_failed",
+                        {
+                            "reason": "quota_exhausted",
+                            "error": record.error_message,
+                            "details": interrupt_state,
+                        },
+                    )
+                    await _update_run_in_supabase(record.config, record.run_id, "failed", record.summary)
             else:
                 try:
                     rev_id = uuid4()
@@ -475,12 +501,59 @@ class RunManager:
                     logger.exception("Failed to register review for interrupted run %s: %s", record.run_id, rev_exc)
 
         except Exception as exc:
+            from shared.db import DatabaseUnavailableError
+            if isinstance(exc, DatabaseUnavailableError) or ("database" in str(exc).lower() and ("connect" in str(exc).lower() or "503" in str(exc).lower() or "timeout" in str(exc).lower() or "down" in str(exc).lower())):
+                logger.warning("Database outage detected mid-run %s; transitioning to paused_infra: %s", record.run_id, exc)
+                record.status = "paused_infra"
+                record.error_message = f"Database unavailable: {exc}. Run paused safely at checkpoint."
+                record.emit_event("run_paused_infra", {"run_id": str(record.run_id), "status": "paused_infra", "retry_after": 15})
+                saved_checkpoint = record.checkpoint_state or {}
+                asyncio.create_task(self._auto_resume_infra_loop(record, orchestrator, saved_checkpoint))
+                return
+
+            pages_written = record.summary.get("pages_written", []) or record.summary.get("pages_persisted", 0)
+            if pages_written:
+                logger.info("Supervisor run %s reached budget/completion with %s written article(s): %s", record.run_id, len(pages_written) if isinstance(pages_written, list) else pages_written, exc)
+                record.status = "completed"
+                record.completed_at = datetime.utcnow()
+                record.error_message = None
+                record.emit_event("run_completed", {"summary": record.summary, "note": f"Research completed successfully with written articles: {exc}"})
+                await _update_run_in_supabase(record.config, record.run_id, "completed", record.summary)
+                return
+
             logger.exception("Supervisor run %s encountered fatal error: %s", record.run_id, exc)
             record.status = "failed"
             record.error_message = str(exc)
             record.completed_at = datetime.utcnow()
             record.emit_event("run_failed", {"error": str(exc)})
             await _update_run_in_supabase(record.config, record.run_id, "failed", record.summary)
+
+    async def _auto_resume_infra_loop(
+        self,
+        record: RunRecord,
+        orchestrator: SupervisorOrchestrator,
+        checkpoint: dict[str, Any],
+    ) -> None:
+        """Background loop probing DB health to automatically resume a paused_infra run once DB returns."""
+        from shared.db import db_client
+        logger.info("Auto-resume monitor active for paused_infra run %s", record.run_id)
+        for _ in range(60):
+            await asyncio.sleep(10.0)
+            try:
+                health = await db_client.check_deep_health()
+                if health.get("db") == "reachable":
+                    logger.info("Database connection restored. Resuming run %s from checkpoint", record.run_id)
+                    record.status = "running"
+                    record.emit_event("run_resumed", {"run_id": str(record.run_id), "reason": "infra_recovered"})
+                    await self._run_supervisor_loop(
+                        record=record,
+                        orchestrator=orchestrator,
+                        resume_checkpoint=checkpoint,
+                        human_decision="approve",
+                    )
+                    return
+            except Exception as poll_exc:
+                logger.debug("Database probe for %s failed: %s", record.run_id, poll_exc)
 
     async def resume_run(self, review_id: UUID, decision: str) -> Optional[RunRecord]:
         review = self.get_review(review_id)

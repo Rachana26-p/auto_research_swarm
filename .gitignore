@@ -2,13 +2,17 @@
 .env
 .env.*
 !.env.example
+!*.example
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
 
-# Context local working memory
+# Context local working memory & local knowledge outputs
 /context/
+knowledge/
+backend/knowledge/
+!knowledge/.gitkeep
 supabase/.temp/
 
 # Python

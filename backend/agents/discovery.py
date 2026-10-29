@@ -22,6 +22,7 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID
+import xml.etree.ElementTree as ET
 
 import httpx
 from pydantic import ValidationError
@@ -98,83 +99,132 @@ def validate_and_filter_url(url: str) -> tuple[bool, str]:
         return False, ""
 
 
+def normalize_doi(doi: str | None) -> str | None:
+    """Normalizes a DOI string to lowercase 10.xxxx/... format."""
+    if not doi or not isinstance(doi, str):
+        return None
+    cleaned = doi.strip().lower()
+    cleaned = re.sub(r"^(?:https?://(?:dx\.)?doi\.org/|doi:)", "", cleaned).strip("/")
+    return cleaned if "10." in cleaned else None
+
+
+def extract_arxiv_id(raw: str | None) -> str | None:
+    """Extracts clean canonical arXiv ID from an ID string or URL."""
+    if not raw or not isinstance(raw, str):
+        return None
+    m = re.search(r"(?:arxiv\.org/(?:abs|pdf|html)/)?([a-z\-]+/\d+|\d{4}\.\d{4,5}(?:v\d+)?)", raw, re.IGNORECASE)
+    if m:
+        base_id = re.sub(r"v\d+$", "", m.group(1).lower())
+        return base_id
+    return None
+
+
+def deduplicate_and_rank_candidates(
+    candidates: list[RankedUrl],
+    candidate_domains: list[str] | None = None,
+    max_urls: int = 10,
+) -> list[RankedUrl]:
+    """
+    Deduplicates candidates across multi-source discovery (arXiv, OpenAlex, Crossref, Tavily):
+    1. DOI deduplication (primary)
+    2. arXiv ID deduplication (secondary)
+    3. Normalized URL deduplication (tertiary)
+    
+    Ranks authoritative academic sources and candidate domain matches highest.
+    """
+    clean_candidates = [
+        d.strip().lower().split(":")[0] for d in (candidate_domains or []) if d and d.strip()
+    ]
+    seen_dois: set[str] = set()
+    seen_arxiv_ids: set[str] = set()
+    seen_urls: set[str] = set()
+
+    ranked_items: list[tuple[tuple[int, float], RankedUrl]] = []
+
+    for item in candidates:
+        is_valid, domain = validate_and_filter_url(item.url)
+        if not is_valid:
+            continue
+
+        normalized_url = item.url.strip().rstrip("/")
+        # Filter obvious corporate marketing/navigational pages
+        try:
+            path = urlparse(normalized_url).path
+            if path and DISALLOWED_PATH_PATTERNS.match(path):
+                continue
+        except Exception:
+            pass
+
+        # 1. DOI check
+        norm_doi = normalize_doi(item.doi)
+        if norm_doi:
+            if norm_doi in seen_dois:
+                continue
+            seen_dois.add(norm_doi)
+
+        # 2. arXiv ID check
+        norm_arxiv = extract_arxiv_id(item.arxiv_id or item.url)
+        if norm_arxiv:
+            if norm_arxiv in seen_arxiv_ids:
+                continue
+            seen_arxiv_ids.add(norm_arxiv)
+
+        # 3. Normalized URL check
+        if normalized_url in seen_urls:
+            continue
+        seen_urls.add(normalized_url)
+
+        score = float(item.relevance_score)
+        score = max(0.0, min(1.0, score))
+
+        # Check candidate domain match
+        if clean_candidates:
+            is_match = any(domain == cd or domain.endswith("." + cd) for cd in clean_candidates)
+            if not is_match and item.source_type not in ("arxiv", "openalex", "crossref"):
+                score = round(score * 0.7, 4)
+                item = item.model_copy(update={"relevance_score": score})
+
+        # Prioritize peer-reviewed and academic repository papers
+        is_academic = (
+            item.source_type in ("arxiv", "openalex", "crossref")
+            or any(ad in domain for ad in ACADEMIC_DOMAIN_PATTERNS)
+            or bool(ACADEMIC_PATH_PATTERNS.search(normalized_url))
+        )
+        priority_flag = 1 if is_academic else 0
+
+        ranked_items.append(
+            (
+                (priority_flag, score),
+                item,
+            )
+        )
+
+    ranked_items.sort(key=lambda x: (x[0][0], x[0][1]), reverse=True)
+    return [r[1] for r in ranked_items[:max_urls]]
+
+
 def rank_search_results(
     results: list[TavilySearchResult],
     candidate_domains: list[str],
     max_urls: int,
 ) -> list[RankedUrl]:
-    """
-    Filters, deduplicates, and ranks URLs from Tavily search results.
-
-    Rules:
-    - Filters out malformed URLs and non-research navigational pages (about, careers, privacy)
-    - Prioritizes authoritative academic repositories and preprint servers
-    - Deprioritizes results outside candidate_domains (reduces relevance_score, does NOT drop)
-    - Deduplicates by normalized URL
-    - Bounded to max_urls
-    """
-    clean_candidates = [
-        d.strip().lower().split(":")[0] for d in candidate_domains if d and d.strip()
-    ]
-
-    seen_urls: set[str] = set()
-    ranked_candidates: list[tuple[tuple[int, float], RankedUrl]] = []
-
+    """Filters, deduplicates, and ranks URLs from Tavily search results."""
+    candidates = []
     for item in results:
         is_valid, domain = validate_and_filter_url(item.url)
         if not is_valid:
-            logger.debug("Filtered out malformed URL from search results: %s", item.url)
             continue
-
-        normalized_url = item.url.strip()
-        if normalized_url in seen_urls:
-            continue
-        seen_urls.add(normalized_url)
-
-        # Filter out obvious corporate marketing / about / legal paths from research results
-        try:
-            parsed_path = urlparse(normalized_url).path
-            if parsed_path and DISALLOWED_PATH_PATTERNS.match(parsed_path):
-                logger.info("Filtered out non-research navigational URL: %s", normalized_url)
-                continue
-        except Exception:
-            pass
-
-        # Base score from Tavily result
-        score = float(item.score)
-        # Cap score between 0.0 and 1.0
-        score = max(0.0, min(1.0, score))
-
-        # Check candidate domain match (exact or subdomain)
-        is_domain_match = False
-        if clean_candidates:
-            is_domain_match = any(
-                domain == cd or domain.endswith("." + cd) for cd in clean_candidates
-            )
-            if not is_domain_match:
-                # Deprioritize results outside candidate domains by multiplying by 0.7
-                score = round(score * 0.7, 4)
-
-        # Prioritize academic preprint servers & paper URLs in sort order
-        is_academic = any(ad in domain for ad in ACADEMIC_DOMAIN_PATTERNS) or bool(ACADEMIC_PATH_PATTERNS.search(normalized_url))
-        priority_flag = 1 if is_academic else 0
-
-        ranked_candidates.append(
-            (
-                (priority_flag, score),
-                RankedUrl(
-                    url=normalized_url,
-                    relevance_score=score,
-                    domain=domain,
-                ),
+        candidates.append(
+            RankedUrl(
+                url=item.url.strip(),
+                relevance_score=max(0.0, min(1.0, float(item.score))),
+                domain=domain,
+                source_type="tavily",
+                title=item.title,
+                abstract=item.content,
             )
         )
-
-    # Sort descending by priority_flag first (academic papers first), then relevance_score
-    ranked_candidates.sort(key=lambda x: (x[0][0], x[0][1]), reverse=True)
-
-    final_urls = [r[1] for r in ranked_candidates[:max_urls]]
-    return final_urls
+    return deduplicate_and_rank_candidates(candidates, candidate_domains, max_urls)
 
 
 class TavilyClient:
@@ -313,29 +363,246 @@ class TavilyClient:
         return validated_output, tool_call
 
 
+class ArxivClient:
+    """Client for querying export.arxiv.org Atom API."""
+
+    def __init__(self, timeout: float = 12.0):
+        self.timeout = timeout
+        self.base_url = "http://export.arxiv.org/api/query"
+
+    async def search(self, query: str, max_results: int = 10) -> tuple[list[RankedUrl], ToolCall]:
+        start = time.perf_counter()
+        params = {
+            "search_query": f"all:{query}",
+            "start": 0,
+            "max_results": max_results,
+            "sortBy": "relevance",
+            "sortOrder": "descending",
+        }
+        candidates: list[RankedUrl] = []
+        error: str | None = None
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.get(self.base_url, params=params)
+                if resp.status_code == 200:
+                    root = ET.fromstring(resp.text)
+                    ns = {
+                        "atom": "http://www.w3.org/2005/Atom",
+                        "arxiv": "http://arxiv.org/schemas/atom",
+                    }
+                    for entry in root.findall("atom:entry", ns):
+                        id_el = entry.find("atom:id", ns)
+                        raw_id = id_el.text.strip() if id_el is not None and id_el.text else ""
+                        arxiv_id = extract_arxiv_id(raw_id)
+                        title_el = entry.find("atom:title", ns)
+                        title = re.sub(r"\s+", " ", title_el.text.strip()) if title_el is not None and title_el.text else "Untitled Preprint"
+                        summary_el = entry.find("atom:summary", ns)
+                        abstract = re.sub(r"\s+", " ", summary_el.text.strip()) if summary_el is not None and summary_el.text else ""
+                        published_el = entry.find("atom:published", ns)
+                        year = None
+                        if published_el is not None and published_el.text:
+                            try:
+                                year = int(published_el.text[:4])
+                            except Exception:
+                                pass
+                        authors = []
+                        for author_el in entry.findall("atom:author", ns):
+                            name_el = author_el.find("atom:name", ns)
+                            if name_el is not None and name_el.text:
+                                authors.append(name_el.text.strip())
+                        doi_el = entry.find("arxiv:doi", ns)
+                        doi = doi_el.text.strip() if doi_el is not None and doi_el.text else None
+
+                        pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf" if arxiv_id else (raw_id or "https://arxiv.org")
+                        candidates.append(
+                            RankedUrl(
+                                url=pdf_url,
+                                relevance_score=0.95,
+                                domain="arxiv.org",
+                                source_type="arxiv",
+                                doi=doi,
+                                arxiv_id=arxiv_id,
+                                title=title,
+                                authors=authors,
+                                year=year,
+                                venue="arXiv",
+                                abstract=abstract,
+                            )
+                        )
+                else:
+                    error = f"HTTP {resp.status_code}"
+        except Exception as exc:
+            error = str(exc)
+            logger.warning("arXiv search failed: %s", exc)
+
+        duration = int((time.perf_counter() - start) * 1000)
+        tool_call = ToolCall(
+            tool_name="arxiv_search",
+            input_args={"query": query, "max_results": max_results},
+            output={"count": len(candidates)},
+            error=error,
+            duration_ms=duration,
+        )
+        return candidates, tool_call
+
+
+class OpenAlexClient:
+    """Client for querying api.openalex.org works endpoint with polite pool headers."""
+
+    def __init__(self, timeout: float = 12.0, email: str = "researcher@example.com"):
+        self.timeout = timeout
+        self.email = email
+        self.base_url = "https://api.openalex.org/works"
+
+    async def search(self, query: str, max_results: int = 10) -> tuple[list[RankedUrl], ToolCall]:
+        start = time.perf_counter()
+        params = {"search": query, "per-page": max_results}
+        headers = {"User-Agent": f"AutoResearchSwarm/1.0 (mailto:{self.email})"}
+        candidates: list[RankedUrl] = []
+        error: str | None = None
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout, headers=headers) as client:
+                resp = await client.get(self.base_url, params=params)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for item in data.get("results", []):
+                        doi = normalize_doi(item.get("doi"))
+                        title = item.get("title") or "Academic Publication"
+                        year = item.get("publication_year")
+                        authors = [
+                            a.get("author", {}).get("display_name", "")
+                            for a in item.get("authorships", [])
+                            if a.get("author", {}).get("display_name")
+                        ]
+                        loc = item.get("primary_location") or {}
+                        source_info = loc.get("source") or {}
+                        venue = source_info.get("display_name") or ""
+                        url = loc.get("pdf_url") or loc.get("landing_page_url") or (f"https://doi.org/{doi}" if doi else "")
+                        if not url:
+                            continue
+                        is_valid, domain = validate_and_filter_url(url)
+                        if not is_valid:
+                            continue
+                        candidates.append(
+                            RankedUrl(
+                                url=url,
+                                relevance_score=0.90,
+                                domain=domain,
+                                source_type="openalex",
+                                doi=doi,
+                                title=title,
+                                authors=authors,
+                                year=year,
+                                venue=venue,
+                            )
+                        )
+                else:
+                    error = f"HTTP {resp.status_code}"
+        except Exception as exc:
+            error = str(exc)
+            logger.warning("OpenAlex search failed: %s", exc)
+
+        duration = int((time.perf_counter() - start) * 1000)
+        tool_call = ToolCall(
+            tool_name="openalex_search",
+            input_args={"query": query, "max_results": max_results},
+            output={"count": len(candidates)},
+            error=error,
+            duration_ms=duration,
+        )
+        return candidates, tool_call
+
+
+class CrossrefClient:
+    """Client for querying api.crossref.org works endpoint with polite pool headers."""
+
+    def __init__(self, timeout: float = 12.0, email: str = "researcher@example.com"):
+        self.timeout = timeout
+        self.email = email
+        self.base_url = "https://api.crossref.org/works"
+
+    async def search(self, query: str, max_results: int = 10) -> tuple[list[RankedUrl], ToolCall]:
+        start = time.perf_counter()
+        params = {"query": query, "rows": max_results}
+        headers = {"User-Agent": f"AutoResearchSwarm/1.0 (mailto:{self.email})"}
+        candidates: list[RankedUrl] = []
+        error: str | None = None
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout, headers=headers) as client:
+                resp = await client.get(self.base_url, params=params)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    items = data.get("message", {}).get("items", [])
+                    for item in items:
+                        doi = normalize_doi(item.get("DOI"))
+                        titles = item.get("title", [])
+                        title = titles[0] if titles else "Crossref Publication"
+                        authors = [
+                            f"{a.get('given', '')} {a.get('family', '')}".strip()
+                            for a in item.get("author", [])
+                            if a.get("family")
+                        ]
+                        created_parts = item.get("created", {}).get("date-parts", [[None]])
+                        year = created_parts[0][0] if created_parts and created_parts[0] else None
+                        venues = item.get("container-title", [])
+                        venue = venues[0] if venues else ""
+                        url = item.get("URL") or (f"https://doi.org/{doi}" if doi else "")
+                        if not url:
+                            continue
+                        is_valid, domain = validate_and_filter_url(url)
+                        if not is_valid:
+                            continue
+                        candidates.append(
+                            RankedUrl(
+                                url=url,
+                                relevance_score=0.88,
+                                domain=domain,
+                                source_type="crossref",
+                                doi=doi,
+                                title=title,
+                                authors=authors,
+                                year=year,
+                                venue=venue,
+                            )
+                        )
+                else:
+                    error = f"HTTP {resp.status_code}"
+        except Exception as exc:
+            error = str(exc)
+            logger.warning("Crossref search failed: %s", exc)
+
+        duration = int((time.perf_counter() - start) * 1000)
+        tool_call = ToolCall(
+            tool_name="crossref_search",
+            input_args={"query": query, "max_results": max_results},
+            output={"count": len(candidates)},
+            error=error,
+            duration_ms=duration,
+        )
+        return candidates, tool_call
+
+
 async def discovery_node(state: dict[str, Any]) -> dict[str, Any]:
     """
     LangGraph node for Discovery agent.
     Reads: subtask state (DiscoveryInput).
     Writes: state.discovered_urls[subtask_id] (DiscoveryOutput).
 
-    Input state keys:
-    - run_id: UUID | str
-    - subtask_id: str
-    - description: str
-    - candidate_domains: list[str]
-    - max_urls: int (optional, default 10)
+    Queries multi-source academic repository network:
+    - arXiv API (preprints)
+    - OpenAlex API (works, polite pool)
+    - Crossref API (publications, polite pool)
+    - Tavily Search (web search)
 
-    Output state keys:
-    - run_id: UUID
-    - subtask_id: str
-    - urls: list[dict]
-    - tool_calls: list[dict]
+    Performs 3-stage deduplication (DOI -> arXiv ID -> Normalized URL).
     """
     start_time = time.perf_counter()
 
     # Validate input against DiscoveryInput schema
-    _discovery_fields = {"run_id", "subtask_id", "description", "candidate_domains", "max_urls", "provider", "model"}
+    _discovery_fields = {
+        "run_id", "subtask_id", "description", "candidate_domains", "max_urls",
+        "enable_academic", "provider", "model",
+    }
     discovery_state = {k: v for k, v in state.items() if k in _discovery_fields} if isinstance(state, dict) else state
     try:
         input_data = DiscoveryInput.model_validate(discovery_state)
@@ -352,6 +619,7 @@ async def discovery_node(state: dict[str, Any]) -> dict[str, Any]:
     )
 
     all_tool_calls: list[ToolCall] = []
+    all_candidates: list[RankedUrl] = []
 
     # Build targeted academic search query from subtask description
     raw_query = input_data.description.strip()
@@ -361,7 +629,7 @@ async def discovery_node(state: dict[str, Any]) -> dict[str, Any]:
     else:
         search_query = raw_query
 
-    # Only constrain include_domains if they represent academic publication repositories
+    # 1. Tavily Search (Primary web search)
     candidate_academic = [
         d for d in (input_data.candidate_domains or [])
         if any(ad in d.lower() for ad in ACADEMIC_DOMAIN_PATTERNS)
@@ -375,62 +643,99 @@ async def discovery_node(state: dict[str, Any]) -> dict[str, Any]:
         include_domains=include_domains,
     )
 
-    ranked_urls: list[RankedUrl] = []
-
+    tavily_candidates: list[RankedUrl] = []
     async with TavilyClient(config) as client:
         try:
             search_output, tool_call = await client.search(search_input)
             all_tool_calls.append(tool_call)
-
-            # Rank and filter results
-            ranked_urls = rank_search_results(
-                results=search_output.results,
-                candidate_domains=input_data.candidate_domains,
-                max_urls=input_data.max_urls,
-            )
-
+            for r in search_output.results:
+                is_valid, domain = validate_and_filter_url(r.url)
+                if is_valid:
+                    tavily_candidates.append(
+                        RankedUrl(
+                            url=r.url.strip(),
+                            relevance_score=max(0.0, min(1.0, float(r.score))),
+                            domain=domain,
+                            source_type="tavily",
+                            title=r.title,
+                            abstract=r.content,
+                        )
+                    )
         except Exception as e:
-            # If constrained search by include_domains returned 0 results or failed,
-            # retry once without domain restriction if candidate_domains was specified
             if input_data.candidate_domains:
-                logger.warning(
-                    "Tavily search with candidate_domains failed or yielded zero, retrying open search: %s",
-                    e,
-                )
-                fallback_input = TavilySearchInput(
-                    query=search_query,
-                    max_results=min(20, max(input_data.max_urls, 5)),
-                    search_depth="basic",
-                    include_domains=None,
-                )
-                search_output, fallback_call = await client.search(fallback_input)
-                all_tool_calls.append(fallback_call)
-
-                ranked_urls = rank_search_results(
-                    results=search_output.results,
-                    candidate_domains=input_data.candidate_domains,
-                    max_urls=input_data.max_urls,
-                )
+                try:
+                    fallback_input = TavilySearchInput(
+                        query=search_query,
+                        max_results=min(20, max(input_data.max_urls, 5)),
+                        search_depth="basic",
+                        include_domains=None,
+                    )
+                    search_output, fallback_call = await client.search(fallback_input)
+                    all_tool_calls.append(fallback_call)
+                    for r in search_output.results:
+                        is_valid, domain = validate_and_filter_url(r.url)
+                        if is_valid:
+                            tavily_candidates.append(
+                                RankedUrl(
+                                    url=r.url.strip(),
+                                    relevance_score=max(0.0, min(1.0, float(r.score))),
+                                    domain=domain,
+                                    source_type="tavily",
+                                    title=r.title,
+                                    abstract=r.content,
+                                )
+                            )
+                except Exception:
+                    pass
             else:
-                raise
+                logger.warning("Tavily search exception in discovery_node: %s", e)
 
-    # If include_domains search returned 0 results, do open fallback search
-    if not ranked_urls and input_data.candidate_domains:
-        logger.info("Search with include_domains returned 0 results. Falling back to open search.")
-        fallback_input = TavilySearchInput(
-            query=search_query,
-            max_results=min(20, max(input_data.max_urls, 5)),
-            search_depth="basic",
-            include_domains=None,
-        )
-        async with TavilyClient(config) as client:
-            search_output, fallback_call = await client.search(fallback_input)
-            all_tool_calls.append(fallback_call)
-            ranked_urls = rank_search_results(
-                results=search_output.results,
-                candidate_domains=input_data.candidate_domains,
-                max_urls=input_data.max_urls,
+    all_candidates.extend(tavily_candidates)
+
+    # Academic Search Network (arXiv, OpenAlex, Crossref)
+    if input_data.enable_academic:
+        # 2. arXiv Academic Preprints Search
+        try:
+            arxiv_client = ArxivClient(timeout=8.0)
+            arxiv_items, arxiv_call = await arxiv_client.search(
+                query=raw_query,
+                max_results=min(10, max(input_data.max_urls, 3)),
             )
+            all_tool_calls.append(arxiv_call)
+            all_candidates.extend(arxiv_items)
+        except Exception as exc:
+            logger.debug("arXiv search in discovery_node skipped/failed: %s", exc)
+
+        # 3. OpenAlex Search (Polite pool)
+        try:
+            openalex_client = OpenAlexClient(timeout=8.0)
+            openalex_items, openalex_call = await openalex_client.search(
+                query=raw_query,
+                max_results=min(10, max(input_data.max_urls, 3)),
+            )
+            all_tool_calls.append(openalex_call)
+            all_candidates.extend(openalex_items)
+        except Exception as exc:
+            logger.debug("OpenAlex search in discovery_node skipped/failed: %s", exc)
+
+        # 4. Crossref Search (Polite pool)
+        try:
+            crossref_client = CrossrefClient(timeout=8.0)
+            crossref_items, crossref_call = await crossref_client.search(
+                query=raw_query,
+                max_results=min(10, max(input_data.max_urls, 3)),
+            )
+            all_tool_calls.append(crossref_call)
+            all_candidates.extend(crossref_items)
+        except Exception as exc:
+            logger.debug("Crossref search in discovery_node skipped/failed: %s", exc)
+
+    # Run multi-source deduplication & ranking
+    ranked_urls = deduplicate_and_rank_candidates(
+        candidates=all_candidates,
+        candidate_domains=input_data.candidate_domains,
+        max_urls=input_data.max_urls,
+    )
 
     output = DiscoveryOutput(
         run_id=input_data.run_id,
@@ -440,10 +745,11 @@ async def discovery_node(state: dict[str, Any]) -> dict[str, Any]:
 
     duration = int((time.perf_counter() - start_time) * 1000)
     logger.info(
-        "Discovery completed in %dms for subtask %s: found %d URLs",
+        "Discovery completed in %dms for subtask %s: found %d URLs across %d sources",
         duration,
         input_data.subtask_id,
         len(output.urls),
+        len(all_candidates),
     )
 
     return {
@@ -478,6 +784,13 @@ __all__ = [
     "discovery_node",
     "run_discovery_sync",
     "TavilyClient",
+    "ArxivClient",
+    "OpenAlexClient",
+    "CrossrefClient",
     "validate_and_filter_url",
     "rank_search_results",
+    "deduplicate_and_rank_candidates",
+    "normalize_doi",
+    "extract_arxiv_id",
 ]
+

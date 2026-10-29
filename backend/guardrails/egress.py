@@ -19,6 +19,17 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
+ACADEMIC_EGRESS_ALLOWLIST: frozenset[str] = frozenset({
+    "export.arxiv.org",
+    "arxiv.org",
+    "api.openalex.org",
+    "openalex.org",
+    "api.crossref.org",
+    "crossref.org",
+    "api.tavily.com",
+    "tavily.com",
+})
+
 _BLOCKED_HOSTNAMES = frozenset({
     "localhost",
     "localhost.localdomain",
@@ -179,4 +190,5 @@ __all__ = [
     "validate_url_and_egress",
     "check_ssrf_hostname",
     "is_ip_blocked",
+    "ACADEMIC_EGRESS_ALLOWLIST",
 ]

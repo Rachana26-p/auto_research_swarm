@@ -294,3 +294,191 @@ export async function compileRunPdf(runId: string, latexCode?: string): Promise<
   }
   return res.blob();
 }
+
+// ============================================================================
+// CHATS & PAPER STUDIO API (WS2, WS5, WS6)
+// ============================================================================
+
+export interface ChatResponse {
+  id: string;
+  user_id: string;
+  title: string;
+  query: string;
+  status: "draft" | "queued" | "pending" | "running" | "completed" | "completed_partial" | "failed" | "cancelled";
+  current_stage: string;
+  sources_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatCreateRequest {
+  title?: string;
+  query: string;
+  params?: {
+    max_pages?: number;
+    max_tokens?: number;
+    max_tool_calls?: number;
+    max_wall_seconds?: number;
+    max_sources?: number;
+    min_pages?: number;
+    provider?: string;
+    model?: string;
+  };
+}
+
+export interface ChatSourceRecord {
+  id: string;
+  chat_id: string;
+  user_id: string;
+  canonical_id: string;
+  title: string;
+  authors: string[];
+  venue?: string;
+  year?: number;
+  url?: string;
+  doi?: string;
+  arxiv_id?: string;
+  source_type?: string;
+  evidence_level?: string;
+  verdict?: "pass" | "fail" | "uncertain";
+  confidence?: number;
+  relevance_score?: number;
+  safety_flags?: string[];
+  markdown?: string;
+  bib_key?: string;
+  created_at: string;
+}
+
+export interface PaperRecord {
+  id: string;
+  chat_id: string;
+  user_id: string;
+  title: string;
+  status: "draft" | "compiled" | "compile_failed" | "short_of_target";
+  current_version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PaperCompileError {
+  file?: string;
+  line?: number;
+  error_type?: string;
+  message: string;
+  snippet?: string;
+}
+
+export interface PaperVersionRecord {
+  id: string;
+  paper_id: string;
+  chat_id: string;
+  user_id: string;
+  version: number;
+  tex_source: string;
+  bib_source: string;
+  created_by: "agent" | "user";
+  compile_status: "pending" | "success" | "failed";
+  page_count: number;
+  storage_path?: string | null;
+  compile_errors: PaperCompileError[];
+  note?: string;
+  created_at: string;
+}
+
+export interface PaperComposerOutput {
+  paper_id: string;
+  chat_id: string;
+  version: number;
+  title: string;
+  tex_source: string;
+  bib_source: string;
+  cited_keys: string[];
+  grounding_score: number;
+  sections: string[];
+  word_count: number;
+  estimated_pages: number;
+  validation_passed: boolean;
+  warnings: string[];
+}
+
+export async function listChats(search?: string): Promise<ChatResponse[]> {
+  const q = search ? `?search=${encodeURIComponent(search)}` : "";
+  return request<ChatResponse[]>(`/chats${q}`, {
+    method: "GET",
+  });
+}
+
+export async function createChat(data: ChatCreateRequest): Promise<ChatResponse> {
+  return request<ChatResponse>("/chats", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+export async function getChat(chatId: string): Promise<ChatResponse> {
+  return request<ChatResponse>(`/chats/${chatId}`, {
+    method: "GET",
+  });
+}
+
+export async function deleteChat(chatId: string): Promise<void> {
+  return request<void>(`/chats/${chatId}`, {
+    method: "DELETE",
+  });
+}
+
+export async function getChatSources(chatId: string): Promise<ChatSourceRecord[]> {
+  return request<ChatSourceRecord[]>(`/chats/${chatId}/sources`, {
+    method: "GET",
+  });
+}
+
+export async function getChatPaper(chatId: string): Promise<PaperRecord> {
+  return request<PaperRecord>(`/chats/${chatId}/paper`, {
+    method: "GET",
+  });
+}
+
+export async function getChatPaperVersions(chatId: string): Promise<PaperVersionRecord[]> {
+  return request<PaperVersionRecord[]>(`/chats/${chatId}/paper/versions`, {
+    method: "GET",
+  });
+}
+
+export async function generateChatPaper(
+  chatId: string,
+  targetPages = 5,
+  style = "IEEEtran"
+): Promise<PaperComposerOutput> {
+  return request<PaperComposerOutput>(`/chats/${chatId}/paper/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target_pages: targetPages, style }),
+  });
+}
+
+export async function updateChatPaperSource(
+  chatId: string,
+  texSource: string,
+  bibSource = "",
+  expectedVersion?: number,
+  note = "",
+  compileNow = false
+): Promise<PaperVersionRecord> {
+  return request<PaperVersionRecord>(`/chats/${chatId}/paper/source`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      tex_source: texSource,
+      bib_source: bibSource,
+      expected_version: expectedVersion,
+      note,
+      compile_now: compileNow,
+    }),
+  });
+}
+
+export function getChatEventsStreamUrl(chatId: string): string {
+  return `/api/chats/${chatId}/events`;
+}
