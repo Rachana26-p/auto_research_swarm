@@ -83,6 +83,20 @@ create table if not exists public.chats (
     last_opened_at timestamptz not null default now()
 );
 
+-- Ensure all required columns exist if public.chats was previously created by an earlier migration
+alter table public.chats add column if not exists query text not null default '';
+alter table public.chats add column if not exists params jsonb not null default '{
+    "max_sources": 15,
+    "max_pages": 15,
+    "token_budget": 500000,
+    "year_range": [2018, 2026],
+    "source_types": ["paper", "web", "doc"],
+    "min_pages": 5
+}'::jsonb;
+alter table public.chats add column if not exists status text not null default 'draft';
+alter table public.chats add column if not exists current_stage text default 'idle';
+alter table public.chats add column if not exists last_opened_at timestamptz not null default now();
+
 create index if not exists idx_chats_user_id on public.chats(user_id);
 create index if not exists idx_chats_last_opened_at on public.chats(last_opened_at desc);
 
